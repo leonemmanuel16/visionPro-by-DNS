@@ -1,0 +1,80 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import {
+  LayoutDashboard,
+  Camera,
+  Activity,
+  Shield,
+  Bell,
+  Settings,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useState } from "react";
+
+const navItems = [
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/cameras", label: "Cameras", icon: Camera },
+  { href: "/dashboard/events", label: "Events", icon: Activity },
+  { href: "/dashboard/zones", label: "Zones", icon: Shield },
+  { href: "/dashboard/alerts", label: "Alerts", icon: Bell },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+];
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <aside
+      className={cn(
+        "flex flex-col border-r border-slate-700/50 bg-slate-900 transition-all duration-200",
+        collapsed ? "w-16" : "w-60"
+      )}
+    >
+      {/* Logo */}
+      <div className="flex h-16 items-center gap-2 border-b border-slate-700/50 px-4">
+        <Eye className="h-7 w-7 text-cyan-500 shrink-0" />
+        {!collapsed && (
+          <span className="text-lg font-bold text-white">DNS Vision AI</span>
+        )}
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 space-y-1 p-2">
+        {navItems.map((item) => {
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn(
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-cyan-600/20 text-cyan-400"
+                  : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              )}
+            >
+              <item.icon className="h-5 w-5 shrink-0" />
+              {!collapsed && <span>{item.label}</span>}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* Collapse toggle */}
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex items-center justify-center border-t border-slate-700/50 p-3 text-slate-500 hover:text-slate-300"
+      >
+        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+      </button>
+    </aside>
+  );
+}
