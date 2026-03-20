@@ -1,0 +1,46 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Data volumes
+data/
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+
+# Docker
+docker-compose.override.yml
+
+# Models (large files)
+services/detector/models/*.pt
+services/detector/models/*.onnx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# MinIO data
+data/clips/
+data/redis/
+data/db/

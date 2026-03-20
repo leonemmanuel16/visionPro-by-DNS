@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./config/go2rtc.yaml:/config/go2rtc.yaml
+
+  camera-manager:
+    build: ./services/camera-manager
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://localhost:6379
+      - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@localhost:5432/visionai
+      - ONVIF_DEFAULT_USER=${ONVIF_DEFAULT_USER:-admin}
+      - ONVIF_DEFAULT_PASS=${ONVIF_DEFAULT_PASS:-admin123}
+      - DISCOVERY_INTERVAL=300
+      - HEALTH_CHECK_INTERVAL=60
+      - GO2RTC_CONFIG_PATH=/config/go2rtc.yaml
+    volumes:
+      - ./config:/config
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+
+  detector:
+    build: ./services/detector
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@postgres:5432/visionai
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASSWORD}
+      - MODEL_NAME=${MODEL_NAME:-yolov10n}
+      - DETECTION_FPS=${DETECTION_FPS:-5}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.5}
+      - GO2RTC_URL=http://host.docker.internal:1984
+    depends_on:
+      - go2rtc
+      - redis
+      - postgres
+      - minio
+
+  api:
+    build: ./services/api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@postgres:5432/visionai
+      - REDIS_URL=redis://redis:6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRY_MINUTES=60
+    depends_on:
+      - postgres
+      - redis
+      - minio
+
+  dashboard:
+    build: ./services/dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_GO2RTC_URL=http://localhost:1984
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
+    depends_on:
+      - api
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=visionai
+      - POSTGRES_USER=vision
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}
+    volumes:
+      - ./data/clips:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
