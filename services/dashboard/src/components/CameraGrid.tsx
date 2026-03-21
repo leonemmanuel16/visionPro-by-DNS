@@ -18,9 +18,9 @@ interface CameraGridProps {
 
 export function CameraGrid({ cameras, gridSize }: CameraGridProps) {
   const gridCols = {
-    2: "grid-cols-1 md:grid-cols-2",
-    3: "grid-cols-1 md:grid-cols-2 lg:grid-cols-3",
-    4: "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+    2: "grid-cols-2",
+    3: "grid-cols-2 md:grid-cols-3",
+    4: "grid-cols-2 md:grid-cols-3 lg:grid-cols-4",
   };
 
   return (
@@ -33,13 +33,13 @@ export function CameraGrid({ cameras, gridSize }: CameraGridProps) {
             href={`/dashboard/cameras/${camera.id}`}
             className="group"
           >
-            <div className="relative rounded-lg border border-slate-700/50 bg-slate-900 overflow-hidden hover:border-cyan-500/50 transition-colors">
+            <div className="relative rounded-lg border border-gray-200 bg-white overflow-hidden hover:border-blue-400 transition-colors shadow-sm">
               <VideoPlayer
                 cameraName={streamName}
                 isOnline={camera.is_online}
                 className="aspect-video"
               />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-white truncate">
                     {camera.name}
@@ -49,7 +49,7 @@ export function CameraGrid({ cameras, gridSize }: CameraGridProps) {
                   </Badge>
                 </div>
                 {camera.location && (
-                  <p className="text-xs text-slate-400 mt-0.5">{camera.location}</p>
+                  <p className="text-xs text-gray-300 mt-0.5">{camera.location}</p>
                 )}
               </div>
             </div>

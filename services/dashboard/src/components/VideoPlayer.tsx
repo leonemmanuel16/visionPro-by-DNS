@@ -97,8 +97,8 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
 
   if (!isOnline) {
     return (
-      <div className={`flex items-center justify-center bg-slate-800 rounded-lg ${className}`}>
-        <div className="text-center text-slate-500">
+      <div className={`flex items-center justify-center bg-gray-200 rounded-lg ${className}`}>
+        <div className="text-center text-gray-400">
           <WifiOff className="mx-auto h-8 w-8 mb-2" />
           <p className="text-sm">Camera Offline</p>
         </div>
@@ -109,13 +109,13 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
   return (
     <div className={`relative bg-black rounded-lg overflow-hidden ${className}`}>
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
-          <Loader2 className="h-8 w-8 animate-spin text-cyan-500" />
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
         </div>
       )}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
-          <p className="text-sm text-slate-500">Stream unavailable</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <p className="text-sm text-gray-400">Stream unavailable</p>
         </div>
       )}
       <video

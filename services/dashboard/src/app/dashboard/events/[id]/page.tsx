@@ -22,7 +22,7 @@ export default function EventDetailPage() {
     api.get(`/events/${id}`).then(setEvent).catch(console.error);
   }, [id]);
 
-  if (!event) return <div className="flex items-center justify-center h-screen text-slate-500">Loading...</div>;
+  if (!event) return <div className="flex items-center justify-center h-screen text-gray-400">Loading...</div>;
 
   return (
     <>
@@ -45,7 +45,7 @@ export default function EventDetailPage() {
                   className="w-full rounded-lg"
                 />
               ) : (
-                <div className="flex h-64 items-center justify-center rounded-lg bg-slate-800 text-slate-500">
+                <div className="flex h-64 items-center justify-center rounded-lg bg-gray-100 text-gray-400">
                   No snapshot available
                 </div>
               )}
@@ -59,30 +59,30 @@ export default function EventDetailPage() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex justify-between">
-                <span className="text-slate-400">Type</span>
+                <span className="text-gray-500">Type</span>
                 <Badge>{event.event_type}</Badge>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Label</span>
+                <span className="text-gray-500">Label</span>
                 <span>{event.label || "—"}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Confidence</span>
+                <span className="text-gray-500">Confidence</span>
                 <span>{event.confidence ? `${(event.confidence * 100).toFixed(1)}%` : "—"}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Camera</span>
-                <Link href={`/dashboard/cameras/${event.camera_id}`} className="text-cyan-400 hover:underline">
+                <span className="text-gray-500">Camera</span>
+                <Link href={`/dashboard/cameras/${event.camera_id}`} className="text-blue-600 hover:underline">
                   {event.camera_id}
                 </Link>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Time</span>
+                <span className="text-gray-500">Time</span>
                 <span>{format(new Date(event.occurred_at), "PPpp")}</span>
               </div>
               {event.bbox && (
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Bounding Box</span>
+                  <span className="text-gray-500">Bounding Box</span>
                   <span className="text-xs font-mono">{JSON.stringify(event.bbox)}</span>
                 </div>
               )}

@@ -13,12 +13,12 @@ export function StatsCard({ label, value, icon: Icon, className }: StatsCardProp
   return (
     <Card className={cn("", className)}>
       <CardContent className="flex items-center gap-4 p-6">
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-cyan-600/10">
-          <Icon className="h-6 w-6 text-cyan-500" />
+        <div className="flex h-12 w-12 items-center justify-center">
+          <Icon className="h-6 w-6 text-blue-600" />
         </div>
         <div>
-          <p className="text-sm text-slate-400">{label}</p>
-          <p className="text-2xl font-bold text-white">{value}</p>
+          <p className="text-sm text-gray-500">{label}</p>
+          <p className="text-2xl font-bold text-gray-900">{value}</p>
         </div>
       </CardContent>
     </Card>

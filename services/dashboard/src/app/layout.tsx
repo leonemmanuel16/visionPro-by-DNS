@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DNS Vision AI",
+  title: "DNS Vision Pro",
   description: "AI-Powered Video Analytics Platform",
 };
 
@@ -15,7 +15,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body className={inter.className}>{children}</body>
     </html>
   );

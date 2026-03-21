@@ -19,7 +19,7 @@ export function PTZControls({ cameraId }: PTZControlsProps) {
 
   return (
     <div className="flex flex-col items-center gap-2">
-      <p className="text-sm text-slate-400 mb-1">PTZ Controls</p>
+      <p className="text-sm text-gray-500 mb-1">PTZ Controls</p>
       <div className="grid grid-cols-3 gap-1">
         <div />
         <Button variant="outline" size="icon" onClick={() => sendPTZ(0, 0.5, 0)}>

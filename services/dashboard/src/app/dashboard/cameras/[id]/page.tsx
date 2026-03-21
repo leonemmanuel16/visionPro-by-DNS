@@ -35,7 +35,7 @@ export default function CameraDetailPage() {
     api.get<any[]>(`/events?camera_id=${id}&per_page=10`).then(setEvents).catch(console.error);
   }, [id]);
 
-  if (!camera) return <div className="flex items-center justify-center h-screen text-slate-500">Loading...</div>;
+  if (!camera) return <div className="flex items-center justify-center h-screen text-gray-400">Loading...</div>;
 
   const streamName = `cam_${camera.id.replace(/-/g, "").slice(0, 12)}`;
 
@@ -61,12 +61,12 @@ export default function CameraDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-400">IP</span><span>{camera.ip_address}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Manufacturer</span><span>{camera.manufacturer || "—"}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Model</span><span>{camera.model || "—"}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Firmware</span><span>{camera.firmware || "—"}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Location</span><span>{camera.location || "—"}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">PTZ</span><span>{camera.has_ptz ? "Yes" : "No"}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">IP</span><span>{camera.ip_address}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Manufacturer</span><span>{camera.manufacturer || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Model</span><span>{camera.model || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Firmware</span><span>{camera.firmware || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Location</span><span>{camera.location || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">PTZ</span><span>{camera.has_ptz ? "Yes" : "No"}</span></div>
               </CardContent>
             </Card>
 
@@ -87,7 +87,7 @@ export default function CameraDetailPage() {
           </CardHeader>
           <CardContent className="space-y-2">
             {events.length === 0 ? (
-              <p className="text-sm text-slate-500">No events for this camera</p>
+              <p className="text-sm text-gray-400">No events for this camera</p>
             ) : (
               events.map((e: any) => (
                 <EventCard key={e.id} {...e} camera_name={camera.name} />

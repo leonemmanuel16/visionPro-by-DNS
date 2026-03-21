@@ -58,7 +58,7 @@ export default function EventsPage() {
         <Card>
           <CardContent className="flex flex-wrap items-center gap-3 p-4">
             <select
-              className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
               value={filter.event_type}
               onChange={(e) => { setFilter({ ...filter, event_type: e.target.value }); setPage(1); }}
             >
@@ -71,7 +71,7 @@ export default function EventsPage() {
               <option value="animal">Animal</option>
             </select>
             <select
-              className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
               value={filter.camera_id}
               onChange={(e) => { setFilter({ ...filter, camera_id: e.target.value }); setPage(1); }}
             >
@@ -86,7 +86,7 @@ export default function EventsPage() {
         {/* Events */}
         <div className="space-y-2">
           {events.length === 0 ? (
-            <p className="py-10 text-center text-slate-500">No events found</p>
+            <p className="py-10 text-center text-gray-400">No events found</p>
           ) : (
             events.map((event) => (
               <EventCard
@@ -108,7 +108,7 @@ export default function EventsPage() {
           >
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <span className="text-sm text-slate-400">Page {page}</span>
+          <span className="text-sm text-gray-400">Page {page}</span>
           <Button
             variant="outline"
             size="sm"

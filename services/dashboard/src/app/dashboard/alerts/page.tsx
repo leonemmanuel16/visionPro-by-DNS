@@ -78,7 +78,7 @@ export default function AlertsPage() {
               />
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <select
-                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                  className="rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm text-gray-700"
                   value={form.camera_id}
                   onChange={(e) => setForm({ ...form, camera_id: e.target.value })}
                 >
@@ -88,7 +88,7 @@ export default function AlertsPage() {
                   ))}
                 </select>
                 <select
-                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                  className="rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm text-gray-700"
                   value={form.channel}
                   onChange={(e) => setForm({ ...form, channel: e.target.value })}
                 >
@@ -122,7 +122,7 @@ export default function AlertsPage() {
 
         <div className="space-y-3">
           {alerts.length === 0 && !creating ? (
-            <div className="flex flex-col items-center py-10 text-slate-500">
+            <div className="flex flex-col items-center py-10 text-gray-400">
               <Bell className="h-12 w-12 mb-4" />
               <p>No alert rules configured</p>
             </div>
@@ -131,8 +131,8 @@ export default function AlertsPage() {
               <Card key={alert.id}>
                 <CardContent className="flex items-center justify-between p-4">
                   <div>
-                    <p className="font-medium text-white">{alert.name}</p>
-                    <p className="text-sm text-slate-400">
+                    <p className="font-medium text-gray-900">{alert.name}</p>
+                    <p className="text-sm text-gray-500">
                       {alert.channel.toUpperCase()} → {alert.target}
                     </p>
                     <div className="flex gap-1 mt-1">

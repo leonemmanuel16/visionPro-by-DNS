@@ -96,4 +96,4 @@ CREATE TABLE alert_rules (
 -- Initial admin user (password: admin123)
 -- Hash generated with bcrypt, rounds=12
 INSERT INTO users (username, email, password_hash, role) VALUES
-('admin', 'admin@dnsit.com.mx', '$2b$12$LQv3c1yqBo9SkvXS7QTJPOoGz3F2M0Z5MBf.gQ8Hxn5Xz9OGqXxW2', 'admin');
+('admin', 'admin@dnsit.com.mx', '$2b$12$/Uca4Taw5JrTTAIilg3D9OswWE/3GXLIwqVmd1XC0LoCQDebZG.U.', 'admin');

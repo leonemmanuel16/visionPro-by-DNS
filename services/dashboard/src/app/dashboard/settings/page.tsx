@@ -48,9 +48,9 @@ export default function SettingsPage() {
           <CardContent className="space-y-2 text-sm">
             {user && (
               <>
-                <div className="flex justify-between"><span className="text-slate-400">Username</span><span>{user.username}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Email</span><span>{user.email}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Role</span><Badge>{user.role}</Badge></div>
+                <div className="flex justify-between"><span className="text-gray-500">Username</span><span>{user.username}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Email</span><span>{user.email}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Role</span><Badge>{user.role}</Badge></div>
               </>
             )}
           </CardContent>
@@ -64,7 +64,7 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {message && (
-                <div className="rounded-md bg-slate-800 p-3 text-sm text-cyan-400">{message}</div>
+                <div className="rounded-md bg-gray-100 p-3 text-sm text-blue-600">{message}</div>
               )}
               {showCreate ? (
                 <div className="space-y-3">
@@ -72,7 +72,7 @@ export default function SettingsPage() {
                   <Input placeholder="Email" type="email" value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} />
                   <Input placeholder="Password" type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
                   <select
-                    className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                    className="w-full rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm text-gray-700"
                     value={newUser.role}
                     onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
                   >
@@ -98,9 +98,9 @@ export default function SettingsPage() {
             <CardTitle className="text-base">System Information</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-slate-400">Version</span><span>1.0.0</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">Platform</span><span>DNS Vision AI</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">License</span><span>Proprietary</span></div>
+            <div className="flex justify-between"><span className="text-gray-500">Version</span><span>1.0.0</span></div>
+            <div className="flex justify-between"><span className="text-gray-500">Platform</span><span>DNS Vision Pro</span></div>
+            <div className="flex justify-between"><span className="text-gray-500">License</span><span>Proprietary</span></div>
           </CardContent>
         </Card>
       </div>

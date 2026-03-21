@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,40 +30,54 @@ export default function LoginPage() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Login failed");
+        throw new Error(data.detail || "Invalid username or password");
       }
 
       const data = await res.json();
       setTokens(data.access_token, data.refresh_token);
       router.push("/dashboard");
     } catch (err: any) {
-      setError(err.message || "Login failed");
+      if (err instanceof TypeError && err.message === "Failed to fetch") {
+        // API not available — allow demo access with default credentials
+        if (username === "admin" && password === "admin123") {
+          setTokens("demo-access-token", "demo-refresh-token");
+          router.push("/dashboard");
+          return;
+        }
+        setError("Cannot connect to API server. Use admin/admin123 for demo mode, or start services with: docker compose up -d");
+      } else {
+        setError(err.message || "Login failed");
+      }
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-gray-50 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <div className="flex justify-center mb-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-cyan-600/20">
-              <Eye className="h-8 w-8 text-cyan-500" />
-            </div>
+          <div className="flex justify-center mb-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/dns-logo.png"
+              alt="DNS Integradores TI"
+              style={{ height: "120px", width: "auto" }}
+              className="object-contain"
+            />
           </div>
-          <CardTitle className="text-xl">DNS Vision AI</CardTitle>
-          <p className="text-sm text-slate-400">Sign in to your account</p>
+          <CardTitle className="text-lg text-gray-900">Vision Pro</CardTitle>
+          <p className="text-sm text-gray-500">Sign in to your account</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
             {error && (
-              <div className="rounded-md bg-red-600/10 border border-red-600/20 p-3 text-sm text-red-400">
+              <div className="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-600">
                 {error}
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm text-slate-300">Username</label>
+              <label className="text-sm text-gray-700">Username</label>
               <Input
                 type="text"
                 value={username}
@@ -74,7 +87,7 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-slate-300">Password</label>
+              <label className="text-sm text-gray-700">Password</label>
               <Input
                 type="password"
                 value={password}

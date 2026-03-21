@@ -35,13 +35,20 @@ interface RecentEvent {
   occurred_at: string;
 }
 
+interface ActivityPoint {
+  hour: string;
+  count: number;
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [events, setEvents] = useState<RecentEvent[]>([]);
+  const [activity, setActivity] = useState<ActivityPoint[]>([]);
 
   useEffect(() => {
     api.get<Stats>("/dashboard/stats").then(setStats).catch(console.error);
     api.get<RecentEvent[]>("/dashboard/recent").then(setEvents).catch(console.error);
+    api.get<ActivityPoint[]>("/dashboard/activity").then(setActivity).catch(console.error);
   }, []);
 
   return (
@@ -80,7 +87,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent className="space-y-2 max-h-96 overflow-auto">
               {events.length === 0 ? (
-                <p className="text-sm text-slate-500">No recent events</p>
+                <p className="text-sm text-gray-400">No recent events</p>
               ) : (
                 events.map((event) => (
                   <EventCard key={event.id} {...event} />
@@ -97,17 +104,18 @@ export default function DashboardPage() {
             <CardContent>
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={[]}>
-                    <XAxis dataKey="hour" stroke="#64748b" fontSize={12} />
-                    <YAxis stroke="#64748b" fontSize={12} />
+                  <BarChart data={activity}>
+                    <XAxis dataKey="hour" stroke="#9ca3af" fontSize={12} />
+                    <YAxis stroke="#9ca3af" fontSize={12} />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "#1e293b",
-                        border: "1px solid #334155",
+                        backgroundColor: "#ffffff",
+                        border: "1px solid #e5e7eb",
                         borderRadius: "8px",
+                        color: "#374151",
                       }}
                     />
-                    <Bar dataKey="count" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

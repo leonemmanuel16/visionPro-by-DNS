@@ -79,7 +79,7 @@ export default function ZonesPage() {
                   onChange={(e) => setNewZone({ ...newZone, name: e.target.value })}
                 />
                 <select
-                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                  className="rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm text-gray-700"
                   value={newZone.camera_id}
                   onChange={(e) => setNewZone({ ...newZone, camera_id: e.target.value })}
                 >
@@ -89,7 +89,7 @@ export default function ZonesPage() {
                   ))}
                 </select>
                 <select
-                  className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200"
+                  className="rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm text-gray-700"
                   value={newZone.zone_type}
                   onChange={(e) => setNewZone({ ...newZone, zone_type: e.target.value })}
                 >
@@ -113,14 +113,14 @@ export default function ZonesPage() {
         {/* Zone list */}
         <div className="space-y-3">
           {zones.length === 0 && !editing ? (
-            <p className="py-10 text-center text-slate-500">No zones configured</p>
+            <p className="py-10 text-center text-gray-400">No zones configured</p>
           ) : (
             zones.map((zone) => (
               <Card key={zone.id}>
                 <CardContent className="flex items-center justify-between p-4">
                   <div>
-                    <p className="font-medium text-white">{zone.name}</p>
-                    <p className="text-sm text-slate-400">
+                    <p className="font-medium text-gray-900">{zone.name}</p>
+                    <p className="text-sm text-gray-500">
                       {getCameraName(zone.camera_id)} — {zone.zone_type.toUpperCase()} — {zone.points.length} points
                     </p>
                     <div className="flex gap-1 mt-1">

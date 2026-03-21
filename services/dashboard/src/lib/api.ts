@@ -1,3 +1,5 @@
+import { getDemoData } from "./demo-data";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 class ApiClient {
@@ -26,10 +28,18 @@ class ApiClient {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    const res = await fetch(`${this.baseUrl}/api/v1${path}`, {
-      ...options,
-      headers,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/v1${path}`, {
+        ...options,
+        headers,
+      });
+    } catch {
+      // API unreachable — return demo data if available
+      const demo = getDemoData(path);
+      if (demo !== null) return demo as T;
+      return (Array.isArray([] as unknown as T) ? [] : {}) as T;
+    }
 
     if (res.status === 401) {
       if (typeof window !== "undefined") {

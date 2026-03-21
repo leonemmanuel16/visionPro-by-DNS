@@ -1,8 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
-  <circle cx="30" cy="30" r="24" stroke="#06b6d4" stroke-width="3" fill="none"/>
-  <circle cx="30" cy="30" r="10" fill="#06b6d4"/>
-  <circle cx="30" cy="30" r="4" fill="#0f172a"/>
-  <path d="M54 30 L56 25 L58 30 L56 35 Z" fill="#06b6d4"/>
-  <text x="70" y="37" font-family="Inter, sans-serif" font-size="24" font-weight="700" fill="white">DNS</text>
-  <text x="130" y="37" font-family="Inter, sans-serif" font-size="24" font-weight="300" fill="#06b6d4">Vision</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 80" fill="none">
+  <defs>
+    <linearGradient id="dnsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#29ABE2"/>
+      <stop offset="100%" style="stop-color:#0071BC"/>
+    </linearGradient>
+  </defs>
+  <text x="10" y="50" font-family="Inter, Arial, sans-serif" font-size="52" font-weight="800" fill="url(#dnsGrad)">DNS</text>
+  <text x="10" y="70" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="500" fill="#6B7280" letter-spacing="4">INTEGRADORES TI</text>
+  <path d="M5 76 Q140 82 275 76" stroke="url(#dnsGrad)" stroke-width="2" fill="none"/>
 </svg>

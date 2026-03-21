@@ -34,9 +34,9 @@ export function EventCard({
 }: EventCardProps) {
   return (
     <Link href={`/dashboard/events/${id}`}>
-      <div className="flex items-center gap-4 rounded-lg border border-slate-700/50 bg-slate-900 p-3 hover:border-cyan-500/50 transition-colors">
+      <div className="flex items-center gap-4 rounded-lg border border-gray-200 bg-white p-3 hover:border-blue-400 transition-colors">
         {/* Thumbnail */}
-        <div className="h-16 w-24 flex-shrink-0 rounded bg-slate-800 overflow-hidden">
+        <div className="h-16 w-24 flex-shrink-0 rounded bg-gray-100 overflow-hidden">
           {thumbnail_path ? (
             <img
               src={`${process.env.NEXT_PUBLIC_API_URL}/api/v1/events/${id}/snapshot`}
@@ -44,7 +44,7 @@ export function EventCard({
               className="h-full w-full object-cover"
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-slate-600 text-xs">
+            <div className="flex h-full w-full items-center justify-center text-gray-400 text-xs">
               No image
             </div>
           )}
@@ -57,13 +57,13 @@ export function EventCard({
               {label || event_type}
             </Badge>
             {confidence && (
-              <span className="text-xs text-slate-500">
+              <span className="text-xs text-gray-500">
                 {(confidence * 100).toFixed(0)}%
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-slate-300 truncate">{camera_name}</p>
-          <p className="text-xs text-slate-500">
+          <p className="mt-1 text-sm text-gray-700 truncate">{camera_name}</p>
+          <p className="text-xs text-gray-400">
             {formatDistanceToNow(new Date(occurred_at), { addSuffix: true })}
           </p>
         </div>
