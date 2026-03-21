@@ -97,3 +97,9 @@ CREATE TABLE alert_rules (
 -- Hash generated with bcrypt, rounds=12 — password: admin
 INSERT INTO users (username, email, password_hash, role) VALUES
 ('admin', 'admin@dnsit.com.mx', '$2b$12$gtGMyVBZlzjcmgxzRt.IreZJikrn8HG3c0Vomwu/C7ZI3ziDXDWoe', 'admin');
+
+-- Default cameras
+INSERT INTO cameras (name, ip_address, onvif_port, username, password_encrypted, is_online, is_enabled, location) VALUES
+('Cámara 1', '192.168.8.26', 80, 'dns', '', true, true, 'Oficina DNS'),
+('Cámara 2', '192.168.8.64', 80, 'dns', '', true, true, 'Oficina DNS')
+ON CONFLICT (ip_address) DO NOTHING;
