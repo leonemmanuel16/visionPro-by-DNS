@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Grid2X2, Grid3X3, Scan, Plus, RefreshCw, X, Eye, EyeOff } from "lucide-react";
+import { Grid2X2, Grid3X3, Scan, Plus, RefreshCw, X, Eye, EyeOff, Camera as CameraIcon } from "lucide-react";
 import { Header } from "@/components/Header";
 import { CameraGrid } from "@/components/CameraGrid";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,24 @@ export default function CamerasPage() {
     location: "",
     manufacturer: "",
     model: "",
+    camera_type: "",
   });
+
+  const CAMERA_TYPES = [
+    { value: "domo", label: "Domo", desc: "Interior/Exterior, visión 360°" },
+    { value: "bala", label: "Bala (Bullet)", desc: "Largo alcance, exterior" },
+    { value: "ptz", label: "PTZ", desc: "Pan-Tilt-Zoom, motorizada" },
+    { value: "fisheye", label: "Fisheye", desc: "Ojo de pez, 180°-360°" },
+    { value: "termica", label: "Térmica", desc: "Detección de calor" },
+    { value: "turret", label: "Turret", desc: "Mini domo, interior" },
+    { value: "box", label: "Box", desc: "Profesional, lente intercambiable" },
+    { value: "otra", label: "Otra", desc: "Otro tipo de cámara" },
+  ];
+
+  const CAMERA_BRANDS = [
+    "Hikvision", "Dahua", "Axis", "Hanwha (Samsung)", "Vivotek",
+    "Uniview", "Bosch", "Honeywell", "Pelco", "Geovision", "Reolink", "Otra",
+  ];
 
   useEffect(() => {
     loadCameras();
@@ -83,6 +100,14 @@ export default function CamerasPage() {
     const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
     if (!ipRegex.test(formData.ip_address.trim())) {
       setFormError("Formato de IP inválido (ej: 192.168.1.100)");
+      return;
+    }
+    if (!formData.camera_type) {
+      setFormError("Selecciona el tipo de cámara");
+      return;
+    }
+    if (!formData.manufacturer) {
+      setFormError("Selecciona la marca de la cámara");
       return;
     }
 
@@ -129,6 +154,7 @@ export default function CamerasPage() {
         location: "",
         manufacturer: "",
         model: "",
+        camera_type: "",
       });
       setShowAddModal(false);
     } catch (err: any) {
@@ -301,33 +327,46 @@ export default function CamerasPage() {
                   </div>
                 </div>
 
-                {/* Location */}
+                {/* Camera Type */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Ubicación
+                    Tipo de Cámara <span className="text-red-500">*</span>
                   </label>
-                  <input
-                    type="text"
-                    placeholder="Ej: Lobby, Estacionamiento, Almacén"
-                    value={formData.location}
-                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
+                  <div className="grid grid-cols-4 gap-2">
+                    {CAMERA_TYPES.map((type) => (
+                      <button
+                        key={type.value}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, camera_type: type.value })}
+                        className={`flex flex-col items-center p-2 rounded-lg border text-center transition-colors ${
+                          formData.camera_type === type.value
+                            ? "border-blue-500 bg-blue-50 text-blue-700"
+                            : "border-gray-200 text-gray-600 hover:border-gray-300"
+                        }`}
+                      >
+                        <CameraIcon className="h-5 w-5 mb-1" />
+                        <span className="text-xs font-medium">{type.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                {/* Manufacturer + Model */}
+                {/* Brand + Model */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Marca
+                      Marca <span className="text-red-500">*</span>
                     </label>
-                    <input
-                      type="text"
-                      placeholder="Hikvision, Dahua, Axis..."
+                    <select
                       value={formData.manufacturer}
                       onChange={(e) => setFormData({ ...formData, manufacturer: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    />
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                    >
+                      <option value="">Seleccionar marca...</option>
+                      {CAMERA_BRANDS.map((brand) => (
+                        <option key={brand} value={brand}>{brand}</option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -341,6 +380,20 @@ export default function CamerasPage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                   </div>
+                </div>
+
+                {/* Location */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Ubicación
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ej: Lobby, Estacionamiento, Almacén"
+                    value={formData.location}
+                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
                 </div>
               </div>
 

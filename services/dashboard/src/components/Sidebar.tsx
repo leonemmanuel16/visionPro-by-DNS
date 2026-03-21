@@ -11,17 +11,23 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Database,
+  Flame,
+  Route,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/cameras", label: "Cameras", icon: Camera },
-  { href: "/dashboard/events", label: "Events", icon: Activity },
-  { href: "/dashboard/zones", label: "Zones", icon: Shield },
-  { href: "/dashboard/alerts", label: "Alerts", icon: Bell },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+  { href: "/dashboard/cameras", label: "Cámaras", icon: Camera },
+  { href: "/dashboard/events", label: "Eventos", icon: Activity },
+  { href: "/dashboard/zones", label: "Zonas", icon: Shield },
+  { href: "/dashboard/alerts", label: "Alertas", icon: Bell },
+  { href: "/dashboard/heatmap", label: "Mapa de Calor", icon: Flame },
+  { href: "/dashboard/traffic", label: "Tráfico", icon: Route },
+  { href: "/dashboard/database", label: "Base de Datos", icon: Database },
+  { href: "/dashboard/settings", label: "Configuración", icon: Settings },
 ];
 
 export function Sidebar() {

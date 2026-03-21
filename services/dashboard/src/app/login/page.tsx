@@ -39,12 +39,12 @@ export default function LoginPage() {
     } catch (err: any) {
       if (err instanceof TypeError && err.message === "Failed to fetch") {
         // API not available — allow demo access with default credentials
-        if (username === "admin" && password === "admin123") {
+        if (username === "admin" && password === "admin") {
           setTokens("demo-access-token", "demo-refresh-token");
           router.push("/dashboard");
           return;
         }
-        setError("Cannot connect to API server. Use admin/admin123 for demo mode, or start services with: docker compose up -d");
+        setError("No se puede conectar al servidor. Usa admin/admin para modo demo.");
       } else {
         setError(err.message || "Login failed");
       }
@@ -67,7 +67,7 @@ export default function LoginPage() {
             />
           </div>
           <CardTitle className="text-lg text-gray-900">Vision Pro</CardTitle>
-          <p className="text-sm text-gray-500">Sign in to your account</p>
+          <p className="text-sm text-gray-500">Inicia sesión en tu cuenta</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
@@ -77,7 +77,7 @@ export default function LoginPage() {
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm text-gray-700">Username</label>
+              <label className="text-sm text-gray-700">Usuario</label>
               <Input
                 type="text"
                 value={username}
@@ -87,17 +87,17 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-gray-700">Password</label>
+              <label className="text-sm text-gray-700">Contraseña</label>
               <Input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
+                placeholder="Contraseña"
                 required
               />
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Signing in..." : "Sign In"}
+              {loading ? "Ingresando..." : "Ingresar"}
             </Button>
           </form>
         </CardContent>

@@ -58,22 +58,22 @@ export default function DashboardPage() {
         {/* Stats */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatsCard
-            label="Total Cameras"
+            label="Total Cámaras"
             value={stats?.total_cameras ?? "—"}
             icon={Camera}
           />
           <StatsCard
-            label="Online Cameras"
+            label="Cámaras Online"
             value={stats?.online_cameras ?? "—"}
             icon={Wifi}
           />
           <StatsCard
-            label="Events Today"
+            label="Eventos Hoy"
             value={stats?.events_today ?? "—"}
             icon={Activity}
           />
           <StatsCard
-            label="Events This Week"
+            label="Eventos Esta Semana"
             value={stats?.events_this_week ?? "—"}
             icon={Calendar}
           />
@@ -83,11 +83,11 @@ export default function DashboardPage() {
           {/* Recent Events */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Recent Events</CardTitle>
+              <CardTitle className="text-base">Eventos Recientes</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 max-h-96 overflow-auto">
               {events.length === 0 ? (
-                <p className="text-sm text-gray-400">No recent events</p>
+                <p className="text-sm text-gray-400">Sin eventos recientes</p>
               ) : (
                 events.map((event) => (
                   <EventCard key={event.id} {...event} />
@@ -99,7 +99,7 @@ export default function DashboardPage() {
           {/* Activity Chart */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Activity (Last 24h)</CardTitle>
+              <CardTitle className="text-base">Actividad (Últimas 24h)</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="h-72">
