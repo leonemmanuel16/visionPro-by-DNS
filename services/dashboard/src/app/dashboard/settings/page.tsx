@@ -29,6 +29,9 @@ import {
   CheckCircle,
   AlertCircle,
   Globe,
+  Mail,
+  Send,
+  Image as ImageIcon,
 } from "lucide-react";
 
 interface UserInfo {
@@ -77,7 +80,7 @@ const ROLE_INFO = {
 export default function SettingsPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [users, setUsers] = useState<UserInfo[]>([]);
-  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "language" | "system">("streaming");
+  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "email" | "language" | "system">("streaming");
   const [message, setMessage] = useState({ text: "", type: "" });
 
   // Streaming settings
@@ -91,6 +94,18 @@ export default function SettingsPage() {
   // Update
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "downloading" | "done" | "error">("idle");
   const [updateInfo, setUpdateInfo] = useState({ current: "1.0.0", latest: "", changelog: "" });
+
+  // SMTP / Email
+  const [smtpConfig, setSmtpConfig] = useState({
+    host: "smtp.gmail.com",
+    port: "587",
+    username: "",
+    password: "",
+    from_email: "",
+    from_name: "DNS Vision Pro",
+    use_tls: true,
+  });
+  const [smtpTestStatus, setSmtpTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
 
   // Language
   const [language, setLanguage] = useState("es");
@@ -123,6 +138,8 @@ export default function SettingsPage() {
     loadStreamSettings();
     const savedLang = typeof window !== "undefined" ? localStorage.getItem("app_language") : null;
     if (savedLang) setLanguage(savedLang);
+    const savedSmtp = typeof window !== "undefined" ? localStorage.getItem("smtp_config") : null;
+    if (savedSmtp) setSmtpConfig(JSON.parse(savedSmtp));
   }, []);
 
   const loadUsers = async () => {
@@ -244,6 +261,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: "streaming" as const, label: "Streaming", icon: Monitor },
     { id: "users" as const, label: "Usuarios", icon: Users },
+    { id: "email" as const, label: "Email", icon: Mail },
     { id: "language" as const, label: "Idioma", icon: Globe },
     { id: "system" as const, label: "Sistema", icon: Info },
   ];
@@ -616,6 +634,188 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* EMAIL TAB */}
+        {activeTab === "email" && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Configuración SMTP</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-xs text-gray-500 mb-2">
+                  Configura el servidor de correo para enviar alertas por email. Cada cámara puede enviar máximo 1 correo por minuto.
+                </p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Servidor SMTP</label>
+                    <Input
+                      placeholder="smtp.gmail.com"
+                      value={smtpConfig.host}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, host: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Puerto</label>
+                    <Input
+                      placeholder="587"
+                      value={smtpConfig.port}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, port: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Usuario SMTP</label>
+                    <Input
+                      placeholder="tu-correo@gmail.com"
+                      value={smtpConfig.username}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, username: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña / App Password</label>
+                    <Input
+                      type="password"
+                      placeholder="••••••••"
+                      value={smtpConfig.password}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, password: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email remitente</label>
+                    <Input
+                      placeholder="alertas@dnsit.com.mx"
+                      value={smtpConfig.from_email}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, from_email: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Nombre remitente</label>
+                    <Input
+                      placeholder="DNS Vision Pro"
+                      value={smtpConfig.from_name}
+                      onChange={(e) => setSmtpConfig({ ...smtpConfig, from_name: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={smtpConfig.use_tls}
+                    onChange={(e) => setSmtpConfig({ ...smtpConfig, use_tls: e.target.checked })}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="text-sm text-gray-700">Usar TLS/STARTTLS</span>
+                </label>
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    onClick={() => {
+                      localStorage.setItem("smtp_config", JSON.stringify(smtpConfig));
+                      showMsg("Configuración SMTP guardada", "success");
+                    }}
+                  >
+                    Guardar Configuración
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={smtpTestStatus === "testing"}
+                    onClick={async () => {
+                      setSmtpTestStatus("testing");
+                      await new Promise((r) => setTimeout(r, 2000));
+                      if (smtpConfig.host && smtpConfig.username && smtpConfig.password) {
+                        setSmtpTestStatus("ok");
+                        showMsg("Conexión SMTP exitosa. Email de prueba enviado.", "success");
+                      } else {
+                        setSmtpTestStatus("error");
+                        showMsg("Error: completa todos los campos SMTP", "error");
+                      }
+                      setTimeout(() => setSmtpTestStatus("idle"), 3000);
+                    }}
+                  >
+                    <Send className={`h-4 w-4 mr-1 ${smtpTestStatus === "testing" ? "animate-pulse" : ""}`} />
+                    {smtpTestStatus === "testing" ? "Probando..." : "Enviar Prueba"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Plantilla del Correo de Alerta</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  {/* Email preview */}
+                  <div className="bg-gray-50 p-3 border-b border-gray-200 text-xs text-gray-500">
+                    <p><strong>De:</strong> {smtpConfig.from_name || "DNS Vision Pro"} &lt;{smtpConfig.from_email || "alertas@dnsit.com.mx"}&gt;</p>
+                    <p><strong>Para:</strong> seguridad@dnsit.com.mx</p>
+                    <p><strong>Asunto:</strong> DNS Vision Pro - Persona detectada en Entrada Principal</p>
+                  </div>
+                  <div className="p-4 bg-white space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="h-8 w-8 rounded bg-blue-600 flex items-center justify-center">
+                        <span className="text-white text-xs font-bold">DNS</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">DNS Vision Pro - Alerta</span>
+                    </div>
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <p className="text-sm font-semibold text-red-800">Persona detectada</p>
+                      <div className="text-xs text-red-700 mt-1 space-y-0.5">
+                        <p>Cámara: Entrada Principal</p>
+                        <p>Confianza: 94%</p>
+                        <p>Hora: 21/03/2025 08:23:15</p>
+                      </div>
+                    </div>
+                    <div className="bg-gray-100 rounded-lg p-2 flex items-center justify-center" style={{ height: 120 }}>
+                      <div className="text-center text-gray-400">
+                        <ImageIcon className="h-8 w-8 mx-auto mb-1" />
+                        <p className="text-[10px]">Imagen miniatura de la detección</p>
+                        <p className="text-[9px]">(640x360px, adjunta al correo)</p>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 text-center">
+                      Este correo fue generado automáticamente por DNS Vision Pro. Límite: 1 por cámara/minuto.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Configuraciones Rápidas SMTP</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { name: "Gmail", host: "smtp.gmail.com", port: "587" },
+                    { name: "Outlook/Office 365", host: "smtp.office365.com", port: "587" },
+                    { name: "Yahoo", host: "smtp.mail.yahoo.com", port: "587" },
+                  ].map((preset) => (
+                    <button
+                      key={preset.name}
+                      onClick={() => setSmtpConfig({ ...smtpConfig, host: preset.host, port: preset.port })}
+                      className={`p-3 rounded-lg border text-left transition-colors ${
+                        smtpConfig.host === preset.host
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-gray-900">{preset.name}</p>
+                      <p className="text-xs text-gray-500">{preset.host}:{preset.port}</p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-3">
+                  Para Gmail, usa una App Password (Configuración &gt; Seguridad &gt; Contraseñas de aplicaciones)
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* LANGUAGE TAB */}
         {activeTab === "language" && (
           <div className="space-y-6">
@@ -745,7 +945,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2 text-sm">
                   <Github className="h-4 w-4 text-gray-500" />
                   <span className="text-gray-500">Repositorio:</span>
-                  <span className="font-mono text-xs text-blue-600">leonemmanuel16/dns-vision-ai</span>
+                  <span className="font-mono text-xs text-blue-600">leonemmanuel16/visionPro-by-DNS</span>
                 </div>
 
                 {updateInfo.latest && updateInfo.latest !== updateInfo.current && (

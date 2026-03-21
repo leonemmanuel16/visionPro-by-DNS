@@ -160,5 +160,6 @@ export function getDemoData(path: string): unknown | null {
     return DEMO_CAMERAS.find((c) => c.id === id) || null;
   }
   if (path === "/events") return DEMO_EVENTS;
+  if (path === "/alerts") return [];
   return null;
 }

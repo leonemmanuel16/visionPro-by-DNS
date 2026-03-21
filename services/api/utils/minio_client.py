@@ -44,6 +44,17 @@ def upload_file(
     return f"{bucket}/{object_name}"
 
 
+def get_object_data(bucket: str, object_name: str) -> bytes:
+    """Download object data as bytes (for email attachments)."""
+    client = get_minio_client()
+    response = client.get_object(bucket, object_name)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
 def get_presigned_url(bucket: str, object_name: str, expires: int = 3600) -> str:
     from datetime import timedelta
 

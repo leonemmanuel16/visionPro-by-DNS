@@ -67,6 +67,13 @@ services:
       - MINIO_SECRET_KEY=${MINIO_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRY_MINUTES=60
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-DNS Vision Pro}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
     depends_on:
       - postgres
       - redis

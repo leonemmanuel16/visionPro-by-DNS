@@ -10,7 +10,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.alert_rule import AlertRule
-from utils.minio_client import get_presigned_url
+from utils.minio_client import get_presigned_url, get_object_data
+from services.email_service import send_alert_email, can_send_email
 
 log = structlog.get_logger()
 
@@ -112,18 +113,33 @@ async def _send_alert(rule: AlertRule, event_data: dict) -> None:
                 },
             )
         elif rule.channel == "email":
-            # Email via webhook (use a service like SendGrid, Mailgun, etc.)
-            webhook_url = os.environ.get("EMAIL_WEBHOOK_URL", "")
-            if webhook_url:
-                await client.post(
-                    webhook_url,
-                    json={
-                        "to": rule.target,
-                        "subject": f"DNS Vision AI - {event_data.get('event_type', 'Detection')} Alert",
-                        "body": message,
-                        "image_url": snapshot_url,
-                    },
-                )
+            # Check per-camera rate limit (1 email per minute)
+            cam_id = str(event_data.get("camera_id", "unknown"))
+            if not can_send_email(cam_id):
+                log.info("alert.email_rate_limited", camera_id=cam_id, rule=rule.name)
+                return
+
+            # Get snapshot image data if available
+            thumbnail_data = None
+            if event_data.get("thumbnail_path"):
+                try:
+                    parts = event_data["thumbnail_path"].split("/", 1)
+                    if len(parts) == 2:
+                        thumbnail_data = get_object_data(parts[0], parts[1])
+                except Exception:
+                    pass  # Send without image
+
+            to_emails = [e.strip() for e in rule.target.split(",") if e.strip()]
+            send_alert_email(
+                to_emails=to_emails,
+                camera_name=event_data.get("camera_name", "Unknown"),
+                camera_id=cam_id,
+                event_type=event_data.get("event_type", "detection"),
+                label=event_data.get("label", "unknown"),
+                confidence=event_data.get("confidence", 0),
+                occurred_at=event_data.get("occurred_at", ""),
+                thumbnail_data=thumbnail_data,
+            )
 
 
 def _is_within_schedule(schedule: dict, now: datetime) -> bool:
