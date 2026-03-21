@@ -28,12 +28,14 @@ export default function CamerasPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<string | null>(null);
 
   // Add camera form
   const [formData, setFormData] = useState({
     name: "",
     ip_address: "",
-    port: "554",
+    port: "80",
     username: "admin",
     password: "",
     location: "",
@@ -41,6 +43,38 @@ export default function CamerasPage() {
     model: "",
     camera_type: "",
   });
+
+  const handleProbeOnvif = async () => {
+    if (!formData.ip_address.trim()) {
+      setFormError("Ingresa la IP para conectar por ONVIF");
+      return;
+    }
+    setProbing(true);
+    setProbeResult(null);
+    setFormError("");
+    try {
+      const data = await api.post<any>("/cameras/probe-onvif", {
+        ip: formData.ip_address.trim(),
+        port: parseInt(formData.port) || 80,
+        username: formData.username.trim() || "admin",
+        password: formData.password,
+      });
+      if (data.success) {
+        setFormData((prev) => ({
+          ...prev,
+          name: prev.name || data.name || "",
+          manufacturer: data.manufacturer || prev.manufacturer,
+          model: data.model || prev.model,
+        }));
+        setProbeResult(`Conectado: ${data.manufacturer} ${data.model}${data.has_ptz ? " (PTZ)" : ""}`);
+      } else {
+        setFormError(data.message || "No se pudo conectar por ONVIF");
+      }
+    } catch {
+      setFormError("No se pudo conectar al API. Verifica que el servidor esté corriendo.");
+    }
+    setProbing(false);
+  };
 
   const CAMERA_TYPES = [
     { value: "domo", label: "Domo", desc: "Interior/Exterior, visión 360°" },
@@ -206,7 +240,7 @@ export default function CamerasPage() {
     setFormData({
       name: "",
       ip_address: "",
-      port: "554",
+      port: "80",
       username: "admin",
       password: "",
       location: "",
@@ -327,8 +361,8 @@ export default function CamerasPage() {
                   />
                 </div>
 
-                {/* IP + Port */}
-                <div className="grid grid-cols-3 gap-3">
+                {/* IP + Port + ONVIF Probe */}
+                <div className="grid grid-cols-4 gap-3">
                   <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Dirección IP <span className="text-red-500">*</span>
@@ -343,17 +377,34 @@ export default function CamerasPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Puerto RTSP
+                      Puerto ONVIF
                     </label>
                     <input
                       type="number"
-                      placeholder="554"
+                      placeholder="80"
                       value={formData.port}
                       onChange={(e) => setFormData({ ...formData, port: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
                     />
                   </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={handleProbeOnvif}
+                      disabled={probing}
+                      className="w-full px-3 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                      {probing ? "Conectando..." : "Detectar ONVIF"}
+                    </button>
+                  </div>
                 </div>
+
+                {/* Probe result */}
+                {probeResult && (
+                  <div className="p-3 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm">
+                    ✅ {probeResult}
+                  </div>
+                )}
 
                 {/* Username + Password */}
                 <div className="grid grid-cols-2 gap-3">

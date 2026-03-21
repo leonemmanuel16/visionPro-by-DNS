@@ -77,6 +77,78 @@ async def delete_camera_route(
         raise HTTPException(status_code=404, detail="Camera not found")
 
 
+@router.post("/probe-onvif")
+async def probe_onvif(
+    data: dict,
+    user: User = Depends(get_current_user),
+):
+    """Probe an ONVIF camera by IP to get its info and RTSP stream URL."""
+    import asyncio
+
+    ip = data.get("ip", "")
+    port = int(data.get("port", 80))
+    username = data.get("username", "admin")
+    password = data.get("password", "")
+
+    if not ip:
+        raise HTTPException(status_code=400, detail="IP address is required")
+
+    try:
+        from onvif import ONVIFCamera
+
+        loop = asyncio.get_event_loop()
+
+        def _probe():
+            cam = ONVIFCamera(ip, port, username, password)
+
+            # Device info
+            info = cam.devicemgmt.GetDeviceInformation()
+            manufacturer = getattr(info, "Manufacturer", "Unknown")
+            model = getattr(info, "Model", "Unknown")
+            firmware = getattr(info, "FirmwareVersion", "")
+
+            # Stream URI
+            media = cam.create_media_service()
+            profiles = media.GetProfiles()
+            rtsp_url = ""
+            if profiles:
+                stream_setup = {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}
+                uri = media.GetStreamUri({"StreamSetup": stream_setup, "ProfileToken": profiles[0].token})
+                rtsp_url = uri.Uri
+                # Inject credentials
+                if rtsp_url and "@" not in rtsp_url:
+                    rtsp_url = rtsp_url.replace("rtsp://", f"rtsp://{username}:{password}@")
+
+            # PTZ
+            has_ptz = False
+            try:
+                ptz = cam.create_ptz_service()
+                if ptz:
+                    has_ptz = True
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "manufacturer": manufacturer,
+                "model": model,
+                "firmware": firmware,
+                "rtsp_url": rtsp_url,
+                "has_ptz": has_ptz,
+                "name": f"{manufacturer} {model} ({ip})",
+            }
+
+        result = await loop.run_in_executor(None, _probe)
+        return result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"No se pudo conectar a {ip}:{port} por ONVIF. Verifica IP, puerto, usuario y contraseña.",
+        }
+
+
 @router.post("/discover", status_code=202)
 async def trigger_discovery(user: User = Depends(get_current_user)):
     """Trigger ONVIF camera discovery by publishing to Redis."""
