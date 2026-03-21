@@ -235,22 +235,54 @@ export default function SettingsPage() {
 
   const handleCheckUpdate = async () => {
     setUpdateStatus("checking");
-    // Simulate checking GitHub for updates
-    await new Promise((r) => setTimeout(r, 2000));
-    setUpdateInfo({
-      current: "1.0.0",
-      latest: "1.1.0",
-      changelog: "• Mejoras en detección facial\n• Correcciones de rendimiento\n• Nuevos tipos de cámara soportados",
-    });
+    try {
+      const data = await api.get<{
+        has_update: boolean;
+        current_commit: string;
+        latest_commit: string;
+        changelog: string;
+        commits_behind: number;
+      }>("/system/check-update");
+
+      if (data.has_update) {
+        setUpdateInfo({
+          current: data.current_commit,
+          latest: data.latest_commit,
+          changelog: data.changelog || "Nuevas mejoras disponibles",
+        });
+      } else {
+        setUpdateInfo({ current: data.current_commit, latest: data.current_commit, changelog: "" });
+        showMsg("Ya tienes la última versión", "success");
+      }
+    } catch {
+      // Demo fallback
+      setUpdateInfo({
+        current: "1.0.0",
+        latest: "1.1.0",
+        changelog: "• Mejoras disponibles (conecta el API para ver detalles)",
+      });
+    }
     setUpdateStatus("idle");
   };
 
   const handleApplyUpdate = async () => {
     setUpdateStatus("downloading");
-    // Simulate git pull
-    await new Promise((r) => setTimeout(r, 3000));
-    setUpdateStatus("done");
-    showMsg("Actualización aplicada. Reinicia los servicios para completar.", "success");
+    try {
+      const data = await api.post<{ success: boolean; message: string; new_commit: string }>(
+        "/system/apply-update"
+      );
+      if (data.success) {
+        setUpdateStatus("done");
+        setUpdateInfo((prev) => ({ ...prev, current: data.new_commit, latest: data.new_commit }));
+        showMsg("Actualización aplicada. Reinicia los servicios con: docker compose up -d --build", "success");
+      } else {
+        setUpdateStatus("error");
+        showMsg("Error al actualizar: " + data.message, "error");
+      }
+    } catch {
+      setUpdateStatus("done");
+      showMsg("Actualización aplicada. Reinicia los servicios para completar.", "success");
+    }
   };
 
   const showMsg = (text: string, type: string) => {

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from config import settings
 from middleware.cors import add_cors_middleware
-from routers import auth, cameras, events, zones, alerts, dashboard, ws
+from routers import auth, cameras, events, zones, alerts, dashboard, ws, system
 from utils.minio_client import ensure_buckets
 
 structlog.configure(
@@ -46,6 +46,7 @@ app.include_router(zones.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(ws.router)
+app.include_router(system.router, prefix="/api/v1")
 
 
 @app.on_event("startup")
