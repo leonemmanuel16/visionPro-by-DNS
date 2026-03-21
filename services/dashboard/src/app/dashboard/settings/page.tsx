@@ -32,6 +32,9 @@ import {
   Mail,
   Send,
   Image as ImageIcon,
+  Trash2,
+  RotateCcw,
+  Camera,
 } from "lucide-react";
 
 interface UserInfo {
@@ -80,7 +83,7 @@ const ROLE_INFO = {
 export default function SettingsPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [users, setUsers] = useState<UserInfo[]>([]);
-  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "email" | "language" | "system">("streaming");
+  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "email" | "trash" | "language" | "system">("streaming");
   const [message, setMessage] = useState({ text: "", type: "" });
 
   // Streaming settings
@@ -94,6 +97,50 @@ export default function SettingsPage() {
   // Update
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "downloading" | "done" | "error">("idle");
   const [updateInfo, setUpdateInfo] = useState({ current: "1.0.0", latest: "", changelog: "" });
+
+  // Trash bin
+  const [trashItems, setTrashItems] = useState<any[]>([]);
+
+  const loadTrash = () => {
+    const raw = typeof window !== "undefined" ? localStorage.getItem("camera_trash") : null;
+    if (!raw) { setTrashItems([]); return; }
+    const items = JSON.parse(raw);
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const valid = items.filter((item: any) => new Date(item.deleted_at).getTime() > thirtyDaysAgo);
+    localStorage.setItem("camera_trash", JSON.stringify(valid));
+    setTrashItems(valid);
+  };
+
+  const restoreCamera = (cam: any) => {
+    // Remove from trash
+    const trash = trashItems.filter((t) => t.id !== cam.id);
+    localStorage.setItem("camera_trash", JSON.stringify(trash));
+    setTrashItems(trash);
+    // Remove from deleted IDs
+    const deletedRaw = localStorage.getItem("deleted_cameras");
+    const deletedIds: string[] = deletedRaw ? JSON.parse(deletedRaw) : [];
+    localStorage.setItem("deleted_cameras", JSON.stringify(deletedIds.filter((id) => id !== cam.id)));
+    // Add back to custom cameras
+    const customRaw = localStorage.getItem("custom_cameras");
+    const custom: any[] = customRaw ? JSON.parse(customRaw) : [];
+    const { deleted_at, ...camData } = cam;
+    custom.push(camData);
+    localStorage.setItem("custom_cameras", JSON.stringify(custom));
+    showMsg(`Cámara "${cam.name}" restaurada`, "success");
+  };
+
+  const permanentDelete = (camId: string) => {
+    const trash = trashItems.filter((t) => t.id !== camId);
+    localStorage.setItem("camera_trash", JSON.stringify(trash));
+    setTrashItems(trash);
+    showMsg("Cámara eliminada permanentemente", "success");
+  };
+
+  const emptyTrash = () => {
+    localStorage.setItem("camera_trash", JSON.stringify([]));
+    setTrashItems([]);
+    showMsg("Papelera vaciada", "success");
+  };
 
   // SMTP / Email
   const [smtpConfig, setSmtpConfig] = useState({
@@ -140,6 +187,7 @@ export default function SettingsPage() {
     if (savedLang) setLanguage(savedLang);
     const savedSmtp = typeof window !== "undefined" ? localStorage.getItem("smtp_config") : null;
     if (savedSmtp) setSmtpConfig(JSON.parse(savedSmtp));
+    loadTrash();
   }, []);
 
   const loadUsers = async () => {
@@ -294,6 +342,7 @@ export default function SettingsPage() {
     { id: "streaming" as const, label: "Streaming", icon: Monitor },
     { id: "users" as const, label: "Usuarios", icon: Users },
     { id: "email" as const, label: "Email", icon: Mail },
+    { id: "trash" as const, label: `Papelera${trashItems.length ? ` (${trashItems.length})` : ""}`, icon: Trash2 },
     { id: "language" as const, label: "Idioma", icon: Globe },
     { id: "system" as const, label: "Sistema", icon: Info },
   ];
@@ -843,6 +892,77 @@ export default function SettingsPage() {
                 <p className="text-[11px] text-gray-400 mt-3">
                   Para Gmail, usa una App Password (Configuración &gt; Seguridad &gt; Contraseñas de aplicaciones)
                 </p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* TRASH TAB */}
+        {activeTab === "trash" && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Trash2 className="h-5 w-5" />
+                  Papelera de Cámaras
+                </CardTitle>
+                {trashItems.length > 0 && (
+                  <Button size="sm" variant="outline" className="text-red-600" onClick={() => { if(confirm("¿Vaciar toda la papelera? Esta acción no se puede deshacer.")) emptyTrash(); }}>
+                    Vaciar Papelera
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                {trashItems.length === 0 ? (
+                  <div className="text-center py-12 text-gray-400">
+                    <Trash2 className="h-10 w-10 mx-auto mb-2" />
+                    <p className="text-sm font-medium">La papelera está vacía</p>
+                    <p className="text-xs mt-1">Las cámaras eliminadas se conservan aquí por 30 días</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-xs text-gray-500">
+                      Las cámaras eliminadas se conservan por 30 días. Después se eliminan automáticamente.
+                    </p>
+                    {trashItems.map((cam) => {
+                      const deletedDate = new Date(cam.deleted_at);
+                      const expiresDate = new Date(deletedDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+                      const daysLeft = Math.ceil((expiresDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+                      return (
+                        <div key={cam.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-200 bg-gray-50">
+                          <div className="flex items-center gap-3">
+                            <Camera className="h-5 w-5 text-gray-400" />
+                            <div>
+                              <p className="text-sm font-medium text-gray-900">{cam.name}</p>
+                              <p className="text-xs text-gray-500">
+                                {cam.ip_address} · {cam.manufacturer || "Sin marca"} · Eliminada {deletedDate.toLocaleDateString("es-MX")}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${daysLeft <= 7 ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600"}`}>
+                              {daysLeft}d restantes
+                            </span>
+                            <button
+                              onClick={() => restoreCamera(cam)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"
+                              title="Restaurar"
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => { if(confirm(`¿Eliminar "${cam.name}" permanentemente?`)) permanentDelete(cam.id); }}
+                              className="p-1.5 text-red-500 hover:bg-red-50 rounded"
+                              title="Eliminar permanentemente"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

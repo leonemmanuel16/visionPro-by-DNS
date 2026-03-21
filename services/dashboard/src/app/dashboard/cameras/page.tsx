@@ -62,15 +62,40 @@ export default function CamerasPage() {
     loadCameras();
   }, []);
 
+  // Get deleted camera IDs from localStorage
+  const getDeletedIds = (): string[] => {
+    const raw = typeof window !== "undefined" ? localStorage.getItem("deleted_cameras") : null;
+    return raw ? JSON.parse(raw) : [];
+  };
+
+  // Get custom cameras from localStorage
+  const getCustomCameras = (): Camera[] => {
+    const raw = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
+    return raw ? JSON.parse(raw) : [];
+  };
+
+  // Get trash bin
+  const getTrashBin = (): (Camera & { deleted_at: string })[] => {
+    const raw = typeof window !== "undefined" ? localStorage.getItem("camera_trash") : null;
+    if (!raw) return [];
+    const items = JSON.parse(raw);
+    // Filter out items older than 30 days
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return items.filter((item: any) => new Date(item.deleted_at).getTime() > thirtyDaysAgo);
+  };
+
   const loadCameras = async () => {
     try {
       const data = await api.get<Camera[]>("/cameras");
-      // Merge with locally saved cameras
-      const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
-      const customCams: Camera[] = saved ? JSON.parse(saved) : [];
-      // Deduplicate by id
+      const customCams = getCustomCameras();
+      const deletedIds = getDeletedIds();
+
+      // Merge API + custom, exclude deleted
       const allIds = new Set(data.map((c) => c.id));
-      const merged = [...data, ...customCams.filter((c) => !allIds.has(c.id))];
+      const merged = [
+        ...data.filter((c) => !deletedIds.includes(c.id)),
+        ...customCams.filter((c) => !allIds.has(c.id) && !deletedIds.includes(c.id)),
+      ];
       setCameras(merged);
     } catch (e) {
       console.error("Failed to load cameras:", e);
@@ -78,16 +103,28 @@ export default function CamerasPage() {
   };
 
   const saveCustomCamera = (cam: Camera) => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
-    const existing: Camera[] = saved ? JSON.parse(saved) : [];
+    const existing = getCustomCameras();
     existing.push(cam);
     localStorage.setItem("custom_cameras", JSON.stringify(existing));
+    // Remove from deleted if it was there
+    const deletedIds = getDeletedIds().filter((id) => id !== cam.id);
+    localStorage.setItem("deleted_cameras", JSON.stringify(deletedIds));
   };
 
-  const removeCustomCamera = (camId: string) => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
-    const existing: Camera[] = saved ? JSON.parse(saved) : [];
-    localStorage.setItem("custom_cameras", JSON.stringify(existing.filter((c) => c.id !== camId)));
+  const moveToTrash = (cam: Camera) => {
+    // Add to trash bin with timestamp
+    const trash = getTrashBin();
+    trash.push({ ...cam, deleted_at: new Date().toISOString() });
+    localStorage.setItem("camera_trash", JSON.stringify(trash));
+    // Add to deleted IDs
+    const deletedIds = getDeletedIds();
+    if (!deletedIds.includes(cam.id)) {
+      deletedIds.push(cam.id);
+      localStorage.setItem("deleted_cameras", JSON.stringify(deletedIds));
+    }
+    // Remove from custom cameras
+    const customCams = getCustomCameras().filter((c) => c.id !== cam.id);
+    localStorage.setItem("custom_cameras", JSON.stringify(customCams));
   };
 
   const triggerDiscovery = async () => {
@@ -182,13 +219,14 @@ export default function CamerasPage() {
   };
 
   const handleDeleteCamera = async (camId: string) => {
-    try {
-      await api.del(`/cameras/${camId}`);
-    } catch {
-      // demo mode
-    }
+    const cam = cameras.find((c) => c.id === camId);
+    if (!cam) return;
+    // Move to trash
+    moveToTrash(cam);
+    // Remove from state
     setCameras((prev) => prev.filter((c) => c.id !== camId));
-    removeCustomCamera(camId);
+    // Try API delete too
+    try { await api.del(`/cameras/${camId}`); } catch { /* demo */ }
   };
 
   const [showPassword, setShowPassword] = useState(false);
