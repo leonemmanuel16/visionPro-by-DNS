@@ -15,7 +15,7 @@ export const DEMO_CAMERAS = [
   },
   {
     id: "cam-002",
-    name: "Cámara 2",
+    name: "Cámara 2 (Fisheye)",
     ip_address: "192.168.8.64",
     is_online: true,
     is_enabled: true,
@@ -24,6 +24,7 @@ export const DEMO_CAMERAS = [
     model: "",
     port: 80,
     username: "dns",
+    camera_type: "fisheye",
   },
 ];
 

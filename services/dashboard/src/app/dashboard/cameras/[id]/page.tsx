@@ -6,6 +6,7 @@ import { Header } from "@/components/Header";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { PTZControls } from "@/components/PTZControls";
 import { DetectionOverlay, DEMO_DETECTIONS } from "@/components/DetectionOverlay";
+import { FisheyeDewarper } from "@/components/FisheyeDewarper";
 import { EventCard } from "@/components/EventCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -183,12 +184,19 @@ export default function CameraDetailPage() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Video + overlay */}
           <div className="lg:col-span-2">
-            <div className="relative rounded-lg overflow-hidden border border-gray-200">
-              <VideoPlayer cameraName={streamName} isOnline={camera.is_online} className="aspect-video w-full" />
-              {camera.is_online && detections.length > 0 && (
-                <DetectionOverlay detections={detections} />
-              )}
-            </div>
+            {camera.camera_type === "fisheye" ? (
+              <FisheyeDewarper
+                cameraName={streamName}
+                isOnline={camera.is_online}
+              />
+            ) : (
+              <div className="relative rounded-lg overflow-hidden border border-gray-200">
+                <VideoPlayer cameraName={streamName} isOnline={camera.is_online} className="aspect-video w-full" />
+                {camera.is_online && detections.length > 0 && (
+                  <DetectionOverlay detections={detections} />
+                )}
+              </div>
+            )}
           </div>
 
           {/* Camera info */}

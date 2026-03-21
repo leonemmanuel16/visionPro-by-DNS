@@ -32,7 +32,6 @@ import {
   Mail,
   Send,
   Image as ImageIcon,
-  Trash2,
   RotateCcw,
   Camera,
 } from "lucide-react";
