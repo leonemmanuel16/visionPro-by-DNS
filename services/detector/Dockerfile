@@ -1,7 +1,6 @@
-FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
+FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \
-    python3 python3-pip \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
