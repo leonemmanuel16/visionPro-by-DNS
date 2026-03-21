@@ -65,10 +65,29 @@ export default function CamerasPage() {
   const loadCameras = async () => {
     try {
       const data = await api.get<Camera[]>("/cameras");
-      setCameras(data);
+      // Merge with locally saved cameras
+      const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
+      const customCams: Camera[] = saved ? JSON.parse(saved) : [];
+      // Deduplicate by id
+      const allIds = new Set(data.map((c) => c.id));
+      const merged = [...data, ...customCams.filter((c) => !allIds.has(c.id))];
+      setCameras(merged);
     } catch (e) {
       console.error("Failed to load cameras:", e);
     }
+  };
+
+  const saveCustomCamera = (cam: Camera) => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
+    const existing: Camera[] = saved ? JSON.parse(saved) : [];
+    existing.push(cam);
+    localStorage.setItem("custom_cameras", JSON.stringify(existing));
+  };
+
+  const removeCustomCamera = (camId: string) => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("custom_cameras") : null;
+    const existing: Camera[] = saved ? JSON.parse(saved) : [];
+    localStorage.setItem("custom_cameras", JSON.stringify(existing.filter((c) => c.id !== camId)));
   };
 
   const triggerDiscovery = async () => {
@@ -112,6 +131,20 @@ export default function CamerasPage() {
     }
 
     setSaving(true);
+
+    const newCam: Camera = {
+      id: `cam-${Date.now()}`,
+      name: formData.name.trim(),
+      ip_address: formData.ip_address.trim(),
+      port: parseInt(formData.port) || 554,
+      username: formData.username.trim(),
+      is_online: false,
+      is_enabled: true,
+      location: formData.location.trim() || undefined,
+      manufacturer: formData.manufacturer.trim() || undefined,
+      model: formData.model.trim() || undefined,
+    };
+
     try {
       await api.post("/cameras", {
         name: formData.name.trim(),
@@ -122,46 +155,40 @@ export default function CamerasPage() {
         location: formData.location.trim() || undefined,
         manufacturer: formData.manufacturer.trim() || undefined,
         model: formData.model.trim() || undefined,
+        camera_type: formData.camera_type,
       });
-
-      // In demo mode, add it locally
-      const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-      if (token === "demo-access-token") {
-        const newCam: Camera = {
-          id: `cam-${Date.now()}`,
-          name: formData.name.trim(),
-          ip_address: formData.ip_address.trim(),
-          port: parseInt(formData.port) || 554,
-          username: formData.username.trim(),
-          is_online: false,
-          is_enabled: true,
-          location: formData.location.trim() || undefined,
-          manufacturer: formData.manufacturer.trim() || undefined,
-          model: formData.model.trim() || undefined,
-        };
-        setCameras((prev) => [...prev, newCam]);
-      } else {
-        await loadCameras();
-      }
-
-      // Reset form and close
-      setFormData({
-        name: "",
-        ip_address: "",
-        port: "554",
-        username: "admin",
-        password: "",
-        location: "",
-        manufacturer: "",
-        model: "",
-        camera_type: "",
-      });
-      setShowAddModal(false);
-    } catch (err: any) {
-      setFormError(err.message || "Error al agregar cámara");
-    } finally {
-      setSaving(false);
+      // API available — reload from server
+      await loadCameras();
+    } catch {
+      // API not available — add locally and persist
+      setCameras((prev) => [...prev, newCam]);
+      saveCustomCamera(newCam);
     }
+
+    // Reset form and close
+    setFormData({
+      name: "",
+      ip_address: "",
+      port: "554",
+      username: "admin",
+      password: "",
+      location: "",
+      manufacturer: "",
+      model: "",
+      camera_type: "",
+    });
+    setShowAddModal(false);
+    setSaving(false);
+  };
+
+  const handleDeleteCamera = async (camId: string) => {
+    try {
+      await api.del(`/cameras/${camId}`);
+    } catch {
+      // demo mode
+    }
+    setCameras((prev) => prev.filter((c) => c.id !== camId));
+    removeCustomCamera(camId);
   };
 
   const [showPassword, setShowPassword] = useState(false);
@@ -220,7 +247,7 @@ export default function CamerasPage() {
             </Button>
           </div>
         ) : (
-          <CameraGrid cameras={cameras} gridSize={gridSize} />
+          <CameraGrid cameras={cameras} gridSize={gridSize} onDelete={handleDeleteCamera} />
         )}
       </div>
 
