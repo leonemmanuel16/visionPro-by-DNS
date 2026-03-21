@@ -1,5 +1,5 @@
 # go2rtc configuration - DNS Vision Pro
-# Cameras Hikvision via ISAPI HTTP port 80
+# Hikvision cameras - multiple source fallback
 
 api:
   listen: ":1984"
@@ -9,6 +9,8 @@ webrtc:
 
 streams:
   cam_001:
-    - "isapi://dns:admin12345@192.168.8.26:80/"
+    - "rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/101"
+    - "rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/102"
   cam_002:
-    - "isapi://dns:admin12345@192.168.8.64:80/"
+    - "rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/101"
+    - "rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/102"
