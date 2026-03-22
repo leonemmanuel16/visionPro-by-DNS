@@ -12,11 +12,11 @@ interface FisheyeDewarperProps {
 
 type ViewMode = "360" | "quad" | "single";
 
-const QUAD_LABELS = [
-  { id: "nw", label: "Vista 1 (NO)", rotation: 0 },
-  { id: "ne", label: "Vista 2 (NE)", rotation: 90 },
-  { id: "sw", label: "Vista 3 (SO)", rotation: 180 },
-  { id: "se", label: "Vista 4 (SE)", rotation: 270 },
+const QUAD_VIEWS = [
+  { id: "nw", label: "Vista 1 (NO)", originX: "0%",   originY: "0%"   },
+  { id: "ne", label: "Vista 2 (NE)", originX: "100%", originY: "0%"   },
+  { id: "sw", label: "Vista 3 (SO)", originX: "0%",   originY: "100%" },
+  { id: "se", label: "Vista 4 (SE)", originX: "100%", originY: "100%" },
 ];
 
 export function FisheyeDewarper({ cameraName, isOnline, className = "" }: FisheyeDewarperProps) {
@@ -53,7 +53,7 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
         )}
       </div>
 
-      {/* 360 Original View */}
+      {/* 360 Original View — single full stream */}
       {viewMode === "360" && (
         <div className="relative rounded-lg overflow-hidden border border-gray-200">
           <VideoPlayer cameraName={cameraName} isOnline={isOnline} className="aspect-video w-full" />
@@ -63,21 +63,24 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
         </div>
       )}
 
-      {/* Quad View - 4 dewarped views */}
+      {/* Quad View — 4 quadrants from the same stream using CSS crop */}
       {viewMode === "quad" && selectedQuad === null && (
         <div className="grid grid-cols-2 gap-2">
-          {QUAD_LABELS.map((quad, i) => (
+          {QUAD_VIEWS.map((quad, i) => (
             <button
               key={quad.id}
               onClick={() => setSelectedQuad(i)}
               className="relative rounded-lg overflow-hidden border border-gray-200 hover:border-blue-400 transition-colors group"
             >
-              <div className="relative aspect-video bg-gray-900">
-                {/* Simulated dewarped view - clips different quadrant of the fisheye */}
+              <div className="relative aspect-video bg-gray-900 overflow-hidden">
+                {/* Scale 2x and position to show one quadrant */}
                 <div
-                  className="absolute inset-0 overflow-hidden"
+                  className="absolute"
                   style={{
-                    /* CSS transform to simulate dewarping each quadrant */
+                    width: "200%",
+                    height: "200%",
+                    left: quad.originX === "100%" ? "-100%" : "0%",
+                    top: quad.originY === "100%" ? "-100%" : "0%",
                   }}
                 >
                   <VideoPlayer
@@ -85,36 +88,18 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
                     isOnline={isOnline}
                     className="w-full h-full"
                   />
-                  {/* Overlay to differentiate quadrants visually */}
-                  <div className="absolute inset-0" style={{
-                    clipPath: i === 0 ? "inset(0 50% 50% 0)" :
-                              i === 1 ? "inset(0 0 50% 50%)" :
-                              i === 2 ? "inset(50% 50% 0 0)" :
-                                        "inset(50% 0 0 50%)",
-                    transform: "scale(2)",
-                    transformOrigin: i === 0 ? "top left" :
-                                     i === 1 ? "top right" :
-                                     i === 2 ? "bottom left" :
-                                               "bottom right",
-                  }}>
-                    <VideoPlayer
-                      cameraName={cameraName}
-                      isOnline={isOnline}
-                      className="w-full h-full"
-                    />
-                  </div>
                 </div>
+              </div>
 
-                {/* Label */}
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
-                  <span className="text-[11px] font-medium text-white">{quad.label}</span>
-                </div>
+              {/* Label */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
+                <span className="text-[11px] font-medium text-white">{quad.label}</span>
+              </div>
 
-                {/* Expand icon on hover */}
-                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="bg-black/60 p-1 rounded">
-                    <Maximize2 className="h-3.5 w-3.5 text-white" />
-                  </div>
+              {/* Expand icon on hover */}
+              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="bg-black/60 p-1 rounded">
+                  <Maximize2 className="h-3.5 w-3.5 text-white" />
                 </div>
               </div>
             </button>
@@ -126,17 +111,15 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
       {viewMode === "quad" && selectedQuad !== null && (
         <div className="relative rounded-lg overflow-hidden border border-gray-200">
           <div className="relative aspect-video bg-gray-900 overflow-hidden">
-            <div className="absolute inset-0" style={{
-              clipPath: selectedQuad === 0 ? "inset(0 50% 50% 0)" :
-                        selectedQuad === 1 ? "inset(0 0 50% 50%)" :
-                        selectedQuad === 2 ? "inset(50% 50% 0 0)" :
-                                             "inset(50% 0 0 50%)",
-              transform: "scale(2)",
-              transformOrigin: selectedQuad === 0 ? "top left" :
-                               selectedQuad === 1 ? "top right" :
-                               selectedQuad === 2 ? "bottom left" :
-                                                    "bottom right",
-            }}>
+            <div
+              className="absolute"
+              style={{
+                width: "200%",
+                height: "200%",
+                left: QUAD_VIEWS[selectedQuad].originX === "100%" ? "-100%" : "0%",
+                top: QUAD_VIEWS[selectedQuad].originY === "100%" ? "-100%" : "0%",
+              }}
+            >
               <VideoPlayer
                 cameraName={cameraName}
                 isOnline={isOnline}
@@ -145,15 +128,15 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
             </div>
           </div>
           <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded">
-            {QUAD_LABELS[selectedQuad].label} — Dewarped
+            {QUAD_VIEWS[selectedQuad].label} — Dewarped
           </div>
 
           {/* Quad selector thumbnails */}
           <div className="absolute bottom-2 right-2 flex gap-1">
-            {QUAD_LABELS.map((_, i) => (
+            {QUAD_VIEWS.map((_, i) => (
               <button
                 key={i}
-                onClick={() => setSelectedQuad(i)}
+                onClick={(e) => { e.stopPropagation(); setSelectedQuad(i); }}
                 className={`w-8 h-6 rounded border-2 text-[8px] font-bold flex items-center justify-center transition-colors ${
                   selectedQuad === i
                     ? "border-blue-500 bg-blue-600 text-white"
