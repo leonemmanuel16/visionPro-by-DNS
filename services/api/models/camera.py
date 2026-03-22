@@ -27,6 +27,7 @@ class Camera(Base):
     rtsp_main_stream: Mapped[str | None] = mapped_column(Text)
     rtsp_sub_stream: Mapped[str | None] = mapped_column(Text)
     onvif_profile_token: Mapped[str | None] = mapped_column(String(100))
+    camera_type: Mapped[str | None] = mapped_column(String(50))
     has_ptz: Mapped[bool] = mapped_column(Boolean, default=False)
     location: Mapped[str | None] = mapped_column(String(200))
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

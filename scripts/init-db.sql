@@ -32,6 +32,7 @@ CREATE TABLE cameras (
     rtsp_main_stream TEXT,
     rtsp_sub_stream TEXT,
     onvif_profile_token VARCHAR(100),
+    camera_type VARCHAR(50),
     has_ptz BOOLEAN DEFAULT false,
     location VARCHAR(200),
     is_enabled BOOLEAN DEFAULT true,
