@@ -21,9 +21,14 @@ class CameraCreate(BaseModel):
 
 class CameraUpdate(BaseModel):
     name: str | None = None
+    ip_address: str | None = None
+    onvif_port: int | None = None
     username: str | None = None
     password: str | None = None
     location: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    camera_type: str | None = None
     is_enabled: bool | None = None
     config: dict | None = None
 

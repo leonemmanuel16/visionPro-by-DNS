@@ -74,7 +74,7 @@ export default function CameraDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [events, setEvents] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<"live" | "detections" | "image" | "events">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "config" | "detections" | "image" | "events">("live");
 
   // Detection settings
   const [enabledDetections, setEnabledDetections] = useState<string[]>(["person", "vehicle", "motion"]);
@@ -95,6 +95,34 @@ export default function CameraDetailPage() {
 
   // Saved message
   const [saved, setSaved] = useState(false);
+
+  // Camera edit fields
+  const [editName, setEditName] = useState("");
+  const [editIp, setEditIp] = useState("");
+  const [editPort, setEditPort] = useState("80");
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editLocation, setEditLocation] = useState("");
+  const [editManufacturer, setEditManufacturer] = useState("");
+  const [editModel, setEditModel] = useState("");
+  const [editCameraType, setEditCameraType] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  const CAMERA_TYPES = [
+    { value: "domo", label: "Domo" },
+    { value: "bala", label: "Bala (Bullet)" },
+    { value: "ptz", label: "PTZ" },
+    { value: "fisheye", label: "Fisheye" },
+    { value: "termica", label: "Térmica" },
+    { value: "turret", label: "Turret" },
+    { value: "box", label: "Box" },
+    { value: "otra", label: "Otra" },
+  ];
+
+  const CAMERA_BRANDS = [
+    "Hikvision", "Dahua", "Axis", "Hanwha (Samsung)", "Vivotek",
+    "Uniview", "Bosch", "Honeywell", "Pelco", "Geovision", "Reolink", "Otra",
+  ];
 
   useEffect(() => {
     // Validate ID format
@@ -139,6 +167,72 @@ export default function CameraDetailPage() {
       if (savedImg) setImageSettings(JSON.parse(savedImg));
     } catch { /* ignore parse errors */ }
   }, [id]);
+
+  // Populate edit fields when camera loads
+  useEffect(() => {
+    if (camera) {
+      setEditName(camera.name || "");
+      setEditIp(camera.ip_address || "");
+      setEditPort(String(camera.port || 80));
+      setEditUsername((camera as any).username || "");
+      setEditLocation(camera.location || "");
+      setEditManufacturer(camera.manufacturer || "");
+      setEditModel(camera.model || "");
+      setEditCameraType(camera.camera_type || "");
+    }
+  }, [camera]);
+
+  const handleSaveCameraConfig = async () => {
+    setEditSaving(true);
+    try {
+      await api.put(`/cameras/${id}`, {
+        name: editName,
+        location: editLocation,
+      });
+      // Update local state
+      setCamera((prev) => prev ? {
+        ...prev,
+        name: editName,
+        location: editLocation,
+        manufacturer: editManufacturer,
+        model: editModel,
+        camera_type: editCameraType,
+      } : prev);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // Save to localStorage as fallback
+      try {
+        const raw = localStorage.getItem("custom_cameras");
+        if (raw) {
+          const cams = JSON.parse(raw).map((c: any) =>
+            c.id === id ? {
+              ...c,
+              name: editName,
+              ip_address: editIp,
+              location: editLocation,
+              manufacturer: editManufacturer,
+              model: editModel,
+              camera_type: editCameraType,
+            } : c
+          );
+          localStorage.setItem("custom_cameras", JSON.stringify(cams));
+        }
+      } catch { /* ignore */ }
+      setCamera((prev) => prev ? {
+        ...prev,
+        name: editName,
+        ip_address: editIp,
+        location: editLocation,
+        manufacturer: editManufacturer,
+        model: editModel,
+        camera_type: editCameraType,
+      } : prev);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
+    setEditSaving(false);
+  };
 
   function loadFromLocalStorage(camId: string): CameraDetail | null {
     try {
@@ -205,6 +299,7 @@ export default function CameraDetailPage() {
 
   const tabs = [
     { id: "live" as const, label: "En Vivo" },
+    { id: "config" as const, label: "Configuración" },
     { id: "detections" as const, label: "Detecciones" },
     { id: "image" as const, label: "Imagen" },
     { id: "events" as const, label: "Eventos" },
@@ -314,6 +409,155 @@ export default function CameraDetailPage() {
             </button>
           ))}
         </div>
+
+        {/* DETECTIONS TAB */}
+        {/* CONFIG TAB */}
+        {activeTab === "config" && (
+          <div className="space-y-4 max-w-2xl">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Configuración de Cámara</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Modifica los datos de conexión y clasificación de esta cámara</p>
+            </div>
+
+            <Card>
+              <CardContent className="p-5 space-y-4">
+                {/* Name */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                {/* IP */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Dirección IP</label>
+                  <input
+                    type="text"
+                    value={editIp}
+                    onChange={(e) => setEditIp(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="192.168.1.100"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Port */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Puerto ONVIF</label>
+                    <input
+                      type="number"
+                      value={editPort}
+                      onChange={(e) => setEditPort(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* Username */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Usuario</label>
+                    <input
+                      type="text"
+                      value={editUsername}
+                      onChange={(e) => setEditUsername(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Password */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+                  <input
+                    type="password"
+                    value={editPassword}
+                    onChange={(e) => setEditPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Dejar vacío para mantener la contraseña actual</p>
+                </div>
+
+                {/* Location */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Ubicación</label>
+                  <input
+                    type="text"
+                    value={editLocation}
+                    onChange={(e) => setEditLocation(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Ej: Lobby, Estacionamiento, Oficina"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5 space-y-4">
+                <h4 className="text-sm font-semibold text-gray-900">Clasificación</h4>
+
+                {/* Camera Type */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Cámara</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {CAMERA_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        onClick={() => setEditCameraType(t.value)}
+                        className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+                          editCameraType === t.value
+                            ? "border-blue-500 bg-blue-50 text-blue-700"
+                            : "border-gray-200 text-gray-600 hover:border-gray-300"
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Brand */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Marca</label>
+                  <select
+                    value={editManufacturer}
+                    onChange={(e) => setEditManufacturer(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Seleccionar marca...</option>
+                    {CAMERA_BRANDS.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Model */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Modelo</label>
+                  <input
+                    type="text"
+                    value={editModel}
+                    onChange={(e) => setEditModel(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Ej: DS-2CD2143G2-I"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Save button */}
+            <div className="flex items-center gap-3">
+              <Button onClick={handleSaveCameraConfig} disabled={editSaving}>
+                <Save className="h-4 w-4 mr-1" />
+                {editSaving ? "Guardando..." : "Guardar Cambios"}
+              </Button>
+              {saved && <span className="text-sm text-green-600 font-medium">✓ Guardado</span>}
+            </div>
+          </div>
+        )}
 
         {/* DETECTIONS TAB */}
         {activeTab === "detections" && (
