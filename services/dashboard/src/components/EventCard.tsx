@@ -40,9 +40,17 @@ export function EventCard({
         <div className="h-16 w-24 flex-shrink-0 rounded bg-gray-100 overflow-hidden">
           {thumbnail_path ? (
             <img
-              src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
+              src={`${getApiUrl()}/api/v1/events/${id}/thumbnail`}
               alt={label || event_type}
               className="h-full w-full object-cover"
+              onError={(e) => {
+                // Fallback: try snapshot if thumbnail fails
+                const img = e.target as HTMLImageElement;
+                if (!img.dataset.retried) {
+                  img.dataset.retried = "1";
+                  img.src = `${getApiUrl()}/api/v1/events/${id}/snapshot`;
+                }
+              }}
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-gray-400 text-xs">

@@ -1,6 +1,7 @@
 """Event Publisher - Save snapshots and publish detection events."""
 
 import io
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -110,7 +111,7 @@ class EventPublisher:
                 uuid.UUID(zone_id) if zone_id else None,
                 snapshot_path,
                 thumbnail_path,
-                str(metadata),
+                json.dumps(metadata),
                 now,
             )
 
