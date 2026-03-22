@@ -14,6 +14,9 @@ class CameraCreate(BaseModel):
     password: str | None = None
     location: str | None = None
     is_enabled: bool = True
+    manufacturer: str | None = None
+    model: str | None = None
+    camera_type: str | None = None
 
 
 class CameraUpdate(BaseModel):

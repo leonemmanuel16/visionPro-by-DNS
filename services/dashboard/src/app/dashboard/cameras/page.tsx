@@ -143,11 +143,30 @@ export default function CamerasPage() {
       const customCams = getCustomCameras();
       const deletedIds = getDeletedIds();
 
-      // Merge API + custom, exclude deleted
-      const allIds = new Set(data.map((c) => c.id));
+      // Build set of API IPs to detect duplicates
+      const apiIps = new Set(data.map((c: any) => c.ip_address).filter(Boolean));
+      const apiIds = new Set(data.map((c) => c.id));
+
+      // Clean localStorage: remove any local camera whose IP already exists in API
+      const cleanedLocal = customCams.filter((c: any) => {
+        if (apiIps.has(c.ip_address)) {
+          // Duplicate by IP — remove from localStorage
+          return false;
+        }
+        if (apiIds.has(c.id)) {
+          // Duplicate by ID — remove from localStorage
+          return false;
+        }
+        return true;
+      });
+      if (cleanedLocal.length !== customCams.length) {
+        localStorage.setItem("custom_cameras", JSON.stringify(cleanedLocal));
+      }
+
+      // Merge API + cleaned local, exclude deleted
       const merged = [
         ...data.filter((c) => !deletedIds.includes(c.id)),
-        ...customCams.filter((c) => !allIds.has(c.id) && !deletedIds.includes(c.id)),
+        ...cleanedLocal.filter((c) => !deletedIds.includes(c.id)),
       ];
       setCameras(merged);
     } catch (e) {
@@ -222,38 +241,43 @@ export default function CamerasPage() {
 
     setSaving(true);
 
-    const newCam: Camera = {
-      id: `cam-${Date.now()}`,
+    const cameraPayload = {
       name: formData.name.trim(),
       ip_address: formData.ip_address.trim(),
-      port: parseInt(formData.port) || 554,
+      onvif_port: parseInt(formData.port) || 80,
       username: formData.username.trim(),
-      is_online: false,
-      is_enabled: true,
+      password: formData.password,
       location: formData.location.trim() || undefined,
       manufacturer: formData.manufacturer.trim() || undefined,
       model: formData.model.trim() || undefined,
+      camera_type: formData.camera_type,
     };
 
-    // Always save locally first
-    saveCustomCamera(newCam);
-    setCameras((prev) => [...prev, newCam]);
-
-    // Try to also save to API
+    // API-FIRST: try backend first to get real UUID and trigger go2rtc config
     try {
-      await api.post("/cameras", {
-        name: formData.name.trim(),
-        ip_address: formData.ip_address.trim(),
-        port: parseInt(formData.port) || 554,
-        username: formData.username.trim(),
-        password: formData.password,
-        location: formData.location.trim() || undefined,
-        manufacturer: formData.manufacturer.trim() || undefined,
-        model: formData.model.trim() || undefined,
-        camera_type: formData.camera_type,
-      });
+      const apiCam = await api.post<Camera>("/cameras", cameraPayload);
+      if (apiCam && (apiCam as any).id) {
+        // Success — reload full list from backend (single source of truth)
+        await loadCameras();
+      } else {
+        throw new Error("API returned empty response");
+      }
     } catch {
-      // API not available — camera already saved locally
+      // API not available — save locally as fallback
+      const newCam: Camera = {
+        id: `cam-${Date.now()}`,
+        name: cameraPayload.name,
+        ip_address: cameraPayload.ip_address,
+        port: cameraPayload.onvif_port,
+        username: cameraPayload.username,
+        is_online: false,
+        is_enabled: true,
+        location: cameraPayload.location,
+        manufacturer: cameraPayload.manufacturer,
+        model: cameraPayload.model,
+      };
+      saveCustomCamera(newCam);
+      setCameras((prev) => [...prev, newCam]);
     }
 
     // Reset form and close
@@ -275,12 +299,28 @@ export default function CamerasPage() {
   const handleDeleteCamera = async (camId: string) => {
     const cam = cameras.find((c) => c.id === camId);
     if (!cam) return;
+
     // Move to trash
     moveToTrash(cam);
+
+    // Also clean any localStorage entries with same IP (prevent ghosts)
+    const camIp = (cam as any).ip_address;
+    if (camIp) {
+      const customCams = getCustomCameras().filter(
+        (c: any) => c.id !== camId && c.ip_address !== camIp
+      );
+      localStorage.setItem("custom_cameras", JSON.stringify(customCams));
+    }
+
     // Remove from state
     setCameras((prev) => prev.filter((c) => c.id !== camId));
-    // Try API delete too
-    try { await api.del(`/cameras/${camId}`); } catch { /* demo */ }
+
+    // Try API delete (triggers Redis event → camera-manager removes go2rtc stream)
+    try {
+      await api.del(`/cameras/${camId}`);
+    } catch {
+      // Camera may be local-only, ignore API errors
+    }
   };
 
   const [showPassword, setShowPassword] = useState(false);

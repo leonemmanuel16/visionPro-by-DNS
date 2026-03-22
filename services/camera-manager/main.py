@@ -54,7 +54,7 @@ class CameraManagerService:
         self.running = True
 
     async def start(self):
-        log.info("camera_manager.starting", version="1.0.0")
+        log.info("camera_manager.starting", version="1.1.0")
 
         # Connect to databases
         self.db_pool = await asyncpg.create_pool(
@@ -75,6 +75,9 @@ class CameraManagerService:
         health_monitor = HealthMonitor(self.db_pool, self.redis)
         go2rtc_config = Go2RTCConfigManager(self.db_pool, self.go2rtc_config_path)
 
+        # Run initial config generation (picks up cameras already in DB)
+        await go2rtc_config.regenerate()
+
         # Run initial discovery
         await self._run_discovery(discovery, client, registry, go2rtc_config)
 
@@ -84,6 +87,7 @@ class CameraManagerService:
                 self._discovery_loop(discovery, client, registry, go2rtc_config)
             ),
             asyncio.create_task(self._health_loop(health_monitor)),
+            asyncio.create_task(self._camera_event_listener(go2rtc_config)),
         ]
 
         log.info(
@@ -97,6 +101,55 @@ class CameraManagerService:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             log.info("camera_manager.shutting_down")
+
+    async def _camera_event_listener(self, go2rtc_config: Go2RTCConfigManager):
+        """Listen for camera lifecycle events from Redis and regenerate config instantly.
+
+        Events published by the API when cameras are added/removed:
+        - camera_discovered: new camera added → regenerate go2rtc config
+        - camera_removed: camera deleted → regenerate go2rtc config
+        - camera_online: camera came back online → regenerate go2rtc config
+        - discover_request: manual discovery trigger from dashboard
+        """
+        last_id = "$"  # Only listen for new events
+        log.info("camera_event_listener.started")
+
+        while self.running:
+            try:
+                # Block for up to 5 seconds waiting for events
+                events = await self.redis.xread(
+                    {"camera_events": last_id},
+                    count=10,
+                    block=5000,
+                )
+
+                if not events:
+                    continue
+
+                for stream_name, messages in events:
+                    for msg_id, data in messages:
+                        last_id = msg_id
+                        event_type = data.get("type", "")
+
+                        if event_type in ("camera_discovered", "camera_removed", "camera_online"):
+                            log.info(
+                                "camera_event_listener.regenerating",
+                                event=event_type,
+                                camera_id=data.get("camera_id", ""),
+                                ip=data.get("ip_address", ""),
+                            )
+                            await go2rtc_config.regenerate()
+
+                        elif event_type == "discover_request":
+                            log.info("camera_event_listener.discovery_requested")
+                            # Discovery is handled by _discovery_loop, just log
+
+            except aioredis.ConnectionError:
+                log.warning("camera_event_listener.redis_disconnected, retrying in 5s")
+                await asyncio.sleep(5)
+            except Exception as e:
+                log.error("camera_event_listener.error", error=str(e))
+                await asyncio.sleep(2)
 
     async def _run_discovery(self, discovery, client, registry, go2rtc_config):
         """Run a single discovery cycle."""
