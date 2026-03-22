@@ -10,6 +10,7 @@ import { api } from "@/lib/api";
 interface CameraItem {
   id: string;
   name: string;
+  ip_address?: string;
   location?: string;
   is_online: boolean;
 }
