@@ -93,8 +93,27 @@ export default function CamerasPage() {
   ];
 
   useEffect(() => {
+    // Clean legacy/corrupt localStorage data on mount
+    cleanLegacyData();
     loadCameras();
   }, []);
+
+  // Clean legacy cam-xxx IDs from localStorage (one-time migration)
+  const cleanLegacyData = () => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("custom_cameras");
+      if (!raw) return;
+      const cams = JSON.parse(raw);
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const VALID_LOCAL = /^cam-\d+$/;
+      const cleaned = cams.filter((c: any) => UUID_RE.test(c.id) || VALID_LOCAL.test(c.id));
+      if (cleaned.length !== cams.length) {
+        localStorage.setItem("custom_cameras", JSON.stringify(cleaned));
+        console.log(`Cleaned ${cams.length - cleaned.length} legacy camera entries`);
+      }
+    } catch { /* ignore */ }
+  };
 
   // Get deleted camera IDs from localStorage
   const getDeletedIds = (): string[] => {

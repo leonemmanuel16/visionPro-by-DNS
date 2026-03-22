@@ -14,6 +14,7 @@ class Go2RTCConfigManager:
     def __init__(self, db_pool: asyncpg.Pool, config_path: str = "/config/go2rtc.yaml"):
         self.db = db_pool
         self.config_path = config_path
+        # camera-manager runs with network_mode: host, so localhost reaches go2rtc
         self.go2rtc_api = "http://localhost:1984"
 
     async def regenerate(self) -> None:
@@ -59,14 +60,39 @@ class Go2RTCConfigManager:
         await self._reload_go2rtc()
 
     async def _reload_go2rtc(self) -> None:
-        """Signal go2rtc to reload its configuration."""
+        """Signal go2rtc to reload its configuration.
+
+        go2rtc supports adding streams via PUT /api/streams.
+        We re-add each stream from the config to ensure go2rtc picks up changes.
+        GET /api/config is read-only and doesn't trigger a reload.
+        """
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self.go2rtc_api}/api/config")
-                if resp.status_code == 200:
-                    log.info("go2rtc_config.reload_signaled")
-                else:
-                    log.warning("go2rtc_config.reload_status", status=resp.status_code)
+                # Read the config we just wrote
+                with open(self.config_path) as f:
+                    config = yaml.safe_load(f)
+
+                streams = config.get("streams", {})
+
+                # Add each stream via go2rtc API
+                for name, sources in streams.items():
+                    if isinstance(sources, list) and sources:
+                        payload = {"name": name, "src": sources[0]}
+                        try:
+                            resp = await client.put(
+                                f"{self.go2rtc_api}/api/streams",
+                                params=payload,
+                            )
+                            if resp.status_code in (200, 201):
+                                log.debug("go2rtc_config.stream_added", name=name)
+                            else:
+                                log.warning("go2rtc_config.stream_add_failed",
+                                            name=name, status=resp.status_code)
+                        except Exception as e:
+                            log.warning("go2rtc_config.stream_add_error",
+                                        name=name, error=str(e))
+
+                log.info("go2rtc_config.reload_complete", streams=len(streams))
         except httpx.ConnectError:
             log.warning("go2rtc_config.not_reachable", url=self.go2rtc_api)
         except Exception as e:

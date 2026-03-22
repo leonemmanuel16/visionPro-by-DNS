@@ -61,11 +61,18 @@ const DETECTION_CAPABILITIES = [
   { id: "motion", label: "Movimiento General", icon: Eye, color: "text-cyan-600", desc: "Cualquier movimiento en el campo de visión" },
 ];
 
+// UUID validation helper
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isValidUUID = (s: string) => UUID_REGEX.test(s);
+const isLegacyId = (s: string) => s.startsWith("cam-") && !isValidUUID(s);
+
 export default function CameraDetailPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
   const [camera, setCamera] = useState<CameraDetail | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<"live" | "detections" | "image" | "events">("live");
 
@@ -90,33 +97,59 @@ export default function CameraDetailPage() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    api.get<CameraDetail>(`/cameras/${id}`).then(setCamera).catch(() => {
-      // Demo fallback
-      const demoCams = [
-        { id: "cam-001", name: "Entrada Principal", ip_address: "192.168.1.100", manufacturer: "Hikvision", model: "DS-2CD2143G2-I", has_ptz: false, is_online: true, is_enabled: true, location: "Lobby", camera_type: "domo" },
-        { id: "cam-002", name: "Estacionamiento Norte", ip_address: "192.168.1.101", manufacturer: "Dahua", model: "IPC-HDBW2431E-S", has_ptz: false, is_online: true, is_enabled: true, location: "Parking Lot", camera_type: "bala" },
-        { id: "cam-003", name: "Oficina Servidores", ip_address: "192.168.1.102", manufacturer: "Axis", model: "P3245-V", has_ptz: false, is_online: true, is_enabled: true, location: "Server Room", camera_type: "domo" },
-        { id: "cam-004", name: "Pasillo Piso 2", ip_address: "192.168.1.103", manufacturer: "Hikvision", model: "DS-2CD2347G2-LU", has_ptz: true, is_online: false, is_enabled: true, location: "2nd Floor Hallway", camera_type: "ptz" },
-        { id: "cam-005", name: "Almacen", ip_address: "192.168.1.104", manufacturer: "Dahua", model: "IPC-HDW3849H-AS", has_ptz: false, is_online: true, is_enabled: true, location: "Warehouse", camera_type: "bala" },
-        { id: "cam-006", name: "Recepcion", ip_address: "192.168.1.105", manufacturer: "Axis", model: "M3106-L Mk II", has_ptz: false, is_online: true, is_enabled: false, location: "Reception", camera_type: "turret" },
-      ];
-      setCamera(demoCams.find((c) => c.id === id) as CameraDetail || null);
-    });
-    api.get<any[]>(`/events?camera_id=${id}&per_page=10`).then(setEvents).catch(() => {
-      // Demo events
-      setEvents([
-        { id: "e1", camera_id: id, event_type: "person_detected", label: "person", confidence: 0.94, occurred_at: new Date(Date.now() - 300000).toISOString() },
-        { id: "e2", camera_id: id, event_type: "motion_detected", label: "motion", confidence: 0.78, occurred_at: new Date(Date.now() - 900000).toISOString() },
-        { id: "e3", camera_id: id, event_type: "vehicle_detected", label: "car", confidence: 0.89, occurred_at: new Date(Date.now() - 1800000).toISOString() },
-      ]);
+    // Validate ID format
+    if (isLegacyId(id)) {
+      setNotFound(true);
+      setLoadError("ID de cámara inválido (formato legacy). Regresa y selecciona la cámara correcta.");
+      return;
+    }
+
+    // Try to load camera from API first, then localStorage
+    api.get<CameraDetail>(`/cameras/${id}`).then((data) => {
+      if (data && (data as any).id) {
+        setCamera(data);
+      } else {
+        // Check localStorage custom cameras
+        const customCam = loadFromLocalStorage(id);
+        if (customCam) {
+          setCamera(customCam);
+        } else {
+          setNotFound(true);
+        }
+      }
+    }).catch(() => {
+      const customCam = loadFromLocalStorage(id);
+      if (customCam) {
+        setCamera(customCam);
+      } else {
+        setNotFound(true);
+      }
     });
 
+    // Load events
+    if (isValidUUID(id)) {
+      api.get<any[]>(`/events?camera_id=${id}&per_page=10`).then(setEvents).catch(() => setEvents([]));
+    }
+
     // Load saved detection settings
-    const savedDet = localStorage.getItem(`cam_detections_${id}`);
-    if (savedDet) setEnabledDetections(JSON.parse(savedDet));
-    const savedImg = localStorage.getItem(`cam_image_${id}`);
-    if (savedImg) setImageSettings(JSON.parse(savedImg));
+    try {
+      const savedDet = localStorage.getItem(`cam_detections_${id}`);
+      if (savedDet) setEnabledDetections(JSON.parse(savedDet));
+      const savedImg = localStorage.getItem(`cam_image_${id}`);
+      if (savedImg) setImageSettings(JSON.parse(savedImg));
+    } catch { /* ignore parse errors */ }
   }, [id]);
+
+  function loadFromLocalStorage(camId: string): CameraDetail | null {
+    try {
+      const raw = localStorage.getItem("custom_cameras");
+      if (!raw) return null;
+      const cams = JSON.parse(raw);
+      const found = cams.find((c: any) => c.id === camId);
+      if (found) return { ...found, has_ptz: false } as CameraDetail;
+    } catch { /* ignore */ }
+    return null;
+  }
 
   const toggleDetection = (detId: string) => {
     setEnabledDetections((prev) =>
@@ -148,6 +181,22 @@ export default function CameraDetailPage() {
     localStorage.removeItem(`cam_image_${id}`);
     router.push("/dashboard/cameras");
   };
+
+  // Not found or invalid ID
+  if (notFound) {
+    return (
+      <>
+        <Header title="Cámara no encontrada" />
+        <div className="flex flex-col items-center justify-center h-[60vh] text-gray-400">
+          <p className="text-lg font-medium mb-2">Cámara no encontrada</p>
+          <p className="text-sm mb-6">{loadError || `No se encontró una cámara con ID: ${id}`}</p>
+          <Button onClick={() => router.push("/dashboard/cameras")}>
+            <ArrowLeft className="h-4 w-4 mr-1" /> Volver a cámaras
+          </Button>
+        </div>
+      </>
+    );
+  }
 
   if (!camera) return <div className="flex items-center justify-center h-screen text-gray-400">Cargando...</div>;
 

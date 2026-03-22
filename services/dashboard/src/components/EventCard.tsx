@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { Badge } from "@/components/ui/badge";
+import { getApiUrl } from "@/lib/urls";
 
 interface EventCardProps {
   id: string;
@@ -39,7 +40,7 @@ export function EventCard({
         <div className="h-16 w-24 flex-shrink-0 rounded bg-gray-100 overflow-hidden">
           {thumbnail_path ? (
             <img
-              src={`${process.env.NEXT_PUBLIC_API_URL}/api/v1/events/${id}/snapshot`}
+              src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
               alt={label || event_type}
               className="h-full w-full object-cover"
             />

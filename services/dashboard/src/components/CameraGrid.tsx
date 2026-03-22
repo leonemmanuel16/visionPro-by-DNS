@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { VideoPlayer } from "./VideoPlayer";
 import { DetectionOverlay, DEMO_DETECTIONS } from "./DetectionOverlay";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +20,21 @@ interface CameraGridProps {
   onDelete?: (id: string) => void;
 }
 
+// UUID format check
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
+  // Filter out legacy cam-xxxxx IDs that aren't valid UUIDs or cam-timestamp IDs
+  const validCameras = useMemo(() => {
+    return cameras.filter((c) => {
+      // Accept UUIDs from backend
+      if (UUID_REGEX.test(c.id)) return true;
+      // Accept cam-timestamp IDs from localStorage (they start with cam- followed by digits)
+      if (c.id.startsWith("cam-") && /^cam-\d+$/.test(c.id)) return true;
+      // Reject everything else (legacy corrupt IDs)
+      return false;
+    });
+  }, [cameras]);
   const gridCols = {
     2: "grid-cols-2",
     3: "grid-cols-2 md:grid-cols-3",
@@ -28,7 +43,7 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
 
   return (
     <div className={`grid ${gridCols[gridSize]} gap-4`}>
-      {cameras.map((camera) => {
+      {validCameras.map((camera) => {
         const streamName = `cam_${camera.id.replace(/-/g, "").slice(0, 12)}`;
         const detections = DEMO_DETECTIONS[camera.id] || [];
         return (
