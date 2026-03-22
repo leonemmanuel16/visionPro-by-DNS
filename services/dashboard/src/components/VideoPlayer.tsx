@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Loader2, WifiOff } from "lucide-react";
+import { getGo2rtcUrl } from "@/lib/urls";
 
 interface VideoPlayerProps {
   cameraName: string;
@@ -14,7 +15,7 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const go2rtcUrl = process.env.NEXT_PUBLIC_GO2RTC_URL || "http://localhost:1984";
+  const go2rtcUrl = getGo2rtcUrl();
 
   useEffect(() => {
     if (!isOnline || !videoRef.current) {

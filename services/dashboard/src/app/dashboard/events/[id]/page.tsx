@@ -10,8 +10,7 @@ import { api } from "@/lib/api";
 import { format } from "date-fns";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { getApiUrl } from "@/lib/urls";
 
 export default function EventDetailPage() {
   const params = useParams();
@@ -40,7 +39,7 @@ export default function EventDetailPage() {
             <CardContent className="p-2">
               {event.snapshot_path ? (
                 <img
-                  src={`${API_URL}/api/v1/events/${id}/snapshot`}
+                  src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
                   alt="Event snapshot"
                   className="w-full rounded-lg"
                 />

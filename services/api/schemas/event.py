@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EventResponse(BaseModel):
@@ -17,11 +17,11 @@ class EventResponse(BaseModel):
     snapshot_path: str | None
     clip_path: str | None
     thumbnail_path: str | None
-    metadata: dict
+    metadata: dict = Field(validation_alias="event_metadata")
     occurred_at: datetime
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class EventFilter(BaseModel):

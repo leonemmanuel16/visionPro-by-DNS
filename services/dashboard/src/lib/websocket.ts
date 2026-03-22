@@ -1,17 +1,18 @@
 "use client";
 
+import { getWsUrl } from "./urls";
+
 type EventCallback = (data: any) => void;
 
 class WebSocketClient {
   private ws: WebSocket | null = null;
-  private url: string;
   private listeners: Map<string, Set<EventCallback>> = new Map();
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private shouldReconnect = true;
 
-  constructor() {
-    this.url = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+  private get url(): string {
+    return getWsUrl();
   }
 
   connect() {

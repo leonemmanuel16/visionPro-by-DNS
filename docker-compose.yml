@@ -85,9 +85,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=${PUBLIC_URL:-http://localhost}:8000
-      - NEXT_PUBLIC_GO2RTC_URL=${PUBLIC_URL:-http://localhost}:1984
-      - NEXT_PUBLIC_WS_URL=${PUBLIC_WS:-ws://localhost}:8000/ws
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_GO2RTC_URL=${NEXT_PUBLIC_GO2RTC_URL:-}
+      - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-}
     depends_on:
       - api
 

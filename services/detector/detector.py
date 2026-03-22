@@ -1,5 +1,6 @@
 """YOLO Detection Wrapper."""
 
+import os
 import time
 from dataclasses import dataclass
 
@@ -20,7 +21,7 @@ class Detection:
 
 
 class YOLODetector:
-    """YOLOv10 inference wrapper."""
+    """YOLOv8/v10 inference wrapper with PyTorch 2.6 safe loading."""
 
     # COCO classes we care about
     TARGET_CLASSES = {
@@ -38,6 +39,9 @@ class YOLODetector:
         19: "cow",
     }
 
+    # Fallback model order if primary fails
+    MODEL_FALLBACKS = ["yolov8n", "yolov5nu"]
+
     def __init__(
         self,
         model_name: str = "yolov10n",
@@ -54,15 +58,44 @@ class YOLODetector:
 
         log.info("detector.loading_model", model=model_name, device=self.device)
 
-        # Load model (auto-downloads if not present)
-        self.model = YOLO(f"{model_name}.pt")
+        # Try loading model with fallbacks for PyTorch 2.6 compatibility
+        self.model = self._load_model_safe(model_name)
         self.model.to(self.device)
 
         # Warm up
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         self.model.predict(dummy, verbose=False)
 
-        log.info("detector.model_ready", model=model_name, device=self.device)
+        log.info("detector.model_ready", device=self.device)
+
+    def _load_model_safe(self, model_name: str) -> YOLO:
+        """Load YOLO model with PyTorch 2.6 safe unpickling fallback."""
+        models_to_try = [model_name] + [m for m in self.MODEL_FALLBACKS if m != model_name]
+
+        for name in models_to_try:
+            try:
+                log.info("detector.trying_model", model=name)
+                model = YOLO(f"{name}.pt")
+                log.info("detector.model_loaded", model=name)
+                return model
+            except Exception as e:
+                error_str = str(e)
+                if "Weights only load" in error_str or "UnpicklingError" in error_str:
+                    log.warning("detector.pytorch26_compat", model=name, error="weights_only restriction")
+                    # Try with weights_only=False via env var (PyTorch 2.6+)
+                    try:
+                        os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
+                        model = YOLO(f"{name}.pt")
+                        log.info("detector.model_loaded_unsafe", model=name)
+                        return model
+                    except Exception as e2:
+                        log.warning("detector.fallback_failed", model=name, error=str(e2))
+                        continue
+                else:
+                    log.warning("detector.load_failed", model=name, error=error_str)
+                    continue
+
+        raise RuntimeError(f"Could not load any YOLO model. Tried: {models_to_try}")
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """Run YOLO inference on a frame. Returns list of detections."""
