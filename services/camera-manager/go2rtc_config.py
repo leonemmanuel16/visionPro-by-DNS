@@ -9,7 +9,14 @@ log = structlog.get_logger()
 
 
 class Go2RTCConfigManager:
-    """Generates go2rtc.yaml from database camera records."""
+    """Generates go2rtc.yaml from database camera records.
+
+    For each camera, generates:
+      - cam_<id12>         : Raw RTSP (H.265/H.264 as-is, for recording/detector)
+      - cam_<id12>_h264    : Transcoded to H.264/Opus via FFmpeg (browser-compatible)
+      - cam_<id12>_sub     : Raw sub-stream RTSP
+      - cam_<id12>_sub_h264: Transcoded sub-stream to H.264/Opus
+    """
 
     def __init__(self, db_pool: asyncpg.Pool, config_path: str = "/config/go2rtc.yaml"):
         self.db = db_pool
@@ -25,21 +32,36 @@ class Go2RTCConfigManager:
                    FROM cameras WHERE is_enabled = true AND rtsp_main_stream IS NOT NULL"""
             )
 
-        streams = {}
+        streams: dict[str, list[str]] = {}
         for cam in cameras:
             # Use short ID for stream name
             cam_id = str(cam["id"]).replace("-", "")[:12]
             safe_name = f"cam_{cam_id}"
 
-            sources = []
+            # --- Main stream ---
             if cam["rtsp_main_stream"]:
-                sources.append(cam["rtsp_main_stream"])
+                rtsp_main = cam["rtsp_main_stream"]
 
-            streams[safe_name] = sources
+                # Base stream: raw RTSP (for detector/recording)
+                streams[safe_name] = [rtsp_main]
 
-            # Also add sub-stream variant for detection
+                # H.264 transcoded stream: browser-compatible WebRTC/HLS
+                # go2rtc ffmpeg syntax: reference the base stream and transcode
+                streams[f"{safe_name}_h264"] = [
+                    f"ffmpeg:{safe_name}#video=h264#audio=opus"
+                ]
+
+            # --- Sub stream ---
             if cam["rtsp_sub_stream"] and cam["rtsp_sub_stream"] != cam["rtsp_main_stream"]:
-                streams[f"{safe_name}_sub"] = [cam["rtsp_sub_stream"]]
+                rtsp_sub = cam["rtsp_sub_stream"]
+
+                # Base sub-stream: raw RTSP
+                streams[f"{safe_name}_sub"] = [rtsp_sub]
+
+                # H.264 transcoded sub-stream
+                streams[f"{safe_name}_sub_h264"] = [
+                    f"ffmpeg:{safe_name}_sub#video=h264#audio=opus"
+                ]
 
         config = {
             "api": {"listen": ":1984"},
@@ -67,7 +89,7 @@ class Go2RTCConfigManager:
         GET /api/config is read-only and doesn't trigger a reload.
         """
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 # Read the config we just wrote
                 with open(self.config_path) as f:
                     config = yaml.safe_load(f)

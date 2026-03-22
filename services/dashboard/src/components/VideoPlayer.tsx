@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Loader2, WifiOff, VideoOff } from "lucide-react";
 import { getGo2rtcUrl } from "@/lib/urls";
 
@@ -10,13 +10,37 @@ interface VideoPlayerProps {
   className?: string;
 }
 
+/**
+ * VideoPlayer with sequential stream candidate fallback.
+ *
+ * For each camera (e.g. cam_abc123), tries streams in order:
+ *   1. cam_abc123_h264      (main transcoded to H.264 — best browser compat)
+ *   2. cam_abc123_sub_h264  (sub transcoded to H.264 — lighter)
+ *   3. cam_abc123_sub       (raw sub — may be H.264 already)
+ *   4. cam_abc123           (raw main — may be H.265, MSE only)
+ *
+ * For each candidate: WebRTC first, then HLS fallback.
+ * If all fail: "Stream no disponible".
+ */
 export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [errorMsg, setErrorMsg] = useState("Stream no disponible");
+  const [activeStream, setActiveStream] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
 
   const go2rtcUrl = getGo2rtcUrl();
+
+  // Generate ordered candidate list
+  const getCandidates = useCallback((base: string): string[] => {
+    return [
+      `${base}_h264`,       // Main transcoded H.264
+      `${base}_sub_h264`,   // Sub transcoded H.264
+      `${base}_sub`,        // Raw sub-stream
+      base,                 // Raw main stream
+    ];
+  }, []);
 
   useEffect(() => {
     if (!isOnline || !videoRef.current) {
@@ -25,211 +49,168 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
     }
 
     const video = videoRef.current;
-    let pc: RTCPeerConnection | null = null;
-    let ws: WebSocket | null = null;
-    let cancelled = false;
+    let currentPc: RTCPeerConnection | null = null;
+    cancelledRef.current = false;
 
-    // Try MSE first (supports H.265), then WebRTC, then HLS
-    async function startMSE() {
-      try {
-        const wsProto = go2rtcUrl.startsWith("https") ? "wss" : "ws";
-        const host = go2rtcUrl.replace(/^https?:\/\//, "");
-        const wsUrl = `${wsProto}://${host}/api/ws?src=${encodeURIComponent(cameraName)}`;
+    async function tryWebRTC(streamName: string): Promise<boolean> {
+      return new Promise((resolve) => {
+        if (cancelledRef.current) { resolve(false); return; }
 
-        ws = new WebSocket(wsUrl);
-        ws.binaryType = "arraybuffer";
-
-        const mediaSource = new MediaSource();
-        video.src = URL.createObjectURL(mediaSource);
-
-        let sourceBuffer: SourceBuffer | null = null;
-        let pendingBuffers: ArrayBuffer[] = [];
-
-        mediaSource.addEventListener("sourceopen", () => {
-          // Try H.265 first, fallback to H.264
-          try {
-            sourceBuffer = mediaSource.addSourceBuffer('video/mp4; codecs="hvc1.1.6.L93.B0"');
-          } catch {
-            try {
-              sourceBuffer = mediaSource.addSourceBuffer('video/mp4; codecs="avc1.640028"');
-            } catch {
-              if (!cancelled) {
-                console.warn("MSE: No compatible codec, trying WebRTC");
-                ws?.close();
-                startWebRTC();
-                return;
-              }
-            }
-          }
-
-          if (sourceBuffer) {
-            sourceBuffer.addEventListener("updateend", () => {
-              if (pendingBuffers.length > 0 && sourceBuffer && !sourceBuffer.updating) {
-                sourceBuffer.appendBuffer(pendingBuffers.shift()!);
-              }
-            });
-          }
-        });
-
-        ws.onmessage = (event) => {
-          if (event.data instanceof ArrayBuffer && sourceBuffer) {
-            if (sourceBuffer.updating || pendingBuffers.length > 0) {
-              pendingBuffers.push(event.data);
-              // Limit buffer to avoid memory leaks
-              if (pendingBuffers.length > 100) pendingBuffers.shift();
-            } else {
-              try {
-                sourceBuffer.appendBuffer(event.data);
-                if (!cancelled) {
-                  setLoading(false);
-                  setError(false);
-                }
-              } catch {
-                pendingBuffers.push(event.data);
-              }
-            }
-          }
-        };
-
-        ws.onerror = () => {
-          if (!cancelled) {
-            console.warn("MSE WebSocket failed, trying WebRTC");
-            startWebRTC();
-          }
-        };
-
-        ws.onclose = (event) => {
-          if (!cancelled && event.code !== 1000) {
-            console.warn("MSE closed unexpectedly, trying WebRTC");
-            startWebRTC();
-          }
-        };
-
-        // Timeout: if no data in 5s, fallback
-        setTimeout(() => {
-          if (!cancelled && loading) {
-            console.warn("MSE timeout, trying WebRTC");
-            ws?.close();
-            startWebRTC();
-          }
-        }, 5000);
-
-      } catch (e) {
-        if (!cancelled) {
-          console.warn("MSE failed:", e);
-          startWebRTC();
-        }
-      }
-    }
-
-    async function startWebRTC() {
-      try {
-        pc = new RTCPeerConnection({
+        const pc = new RTCPeerConnection({
           iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
         });
+        currentPc = pc;
+
+        let resolved = false;
+        const done = (success: boolean) => {
+          if (!resolved) {
+            resolved = true;
+            if (!success) pc.close();
+            resolve(success);
+          }
+        };
+
+        // Timeout: 6s per candidate
+        const timer = setTimeout(() => done(false), 6000);
 
         pc.ontrack = (event) => {
-          if (video && !cancelled) {
+          if (video && !cancelledRef.current) {
             video.srcObject = event.streams[0];
-            setLoading(false);
-            setError(false);
+            // Wait for actual video data
+            video.onloadeddata = () => {
+              clearTimeout(timer);
+              setLoading(false);
+              setError(false);
+              setActiveStream(streamName);
+              done(true);
+            };
+          }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+            clearTimeout(timer);
+            done(false);
           }
         };
 
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        const res = await fetch(
-          `${go2rtcUrl}/api/webrtc?src=${encodeURIComponent(cameraName)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/sdp" },
-            body: offer.sdp,
-          }
-        );
-
-        if (!res.ok) {
-          if (res.status === 404) {
-            if (!cancelled) {
-              setErrorMsg("Stream no encontrado en go2rtc");
-              setError(true);
-              setLoading(false);
-            }
-            return;
-          }
-          throw new Error(`WebRTC ${res.status}`);
-        }
-
-        const answer = await res.text();
-        await pc.setRemoteDescription({ type: "answer", sdp: answer });
-
-        // Timeout for video track
-        setTimeout(() => {
-          if (!cancelled && loading) {
-            console.warn("WebRTC timeout, trying HLS");
-            pc?.close();
-            fallbackToHLS();
-          }
-        }, 8000);
-
-      } catch (e) {
-        if (!cancelled) {
-          console.warn("WebRTC failed, falling back to HLS:", e);
-          fallbackToHLS();
-        }
-      }
-    }
-
-    function fallbackToHLS() {
-      import("hls.js").then(({ default: Hls }) => {
-        if (cancelled || !Hls.isSupported() || !video) {
-          if (!cancelled) {
-            setErrorMsg("Stream no disponible");
-            setError(true);
-            setLoading(false);
-          }
-          return;
-        }
-
-        const hls = new Hls({ liveDurationInfinity: true });
-        hls.loadSource(
-          `${go2rtcUrl}/api/stream.m3u8?src=${encodeURIComponent(cameraName)}`
-        );
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (!cancelled) {
-            video.play().catch(() => {});
-            setLoading(false);
-          }
-        });
-        hls.on(Hls.Events.ERROR, () => {
-          if (!cancelled) {
-            setErrorMsg("Stream no disponible");
-            setError(true);
-            setLoading(false);
-          }
-        });
-      }).catch(() => {
-        if (!cancelled) {
-          setErrorMsg("Stream no disponible");
-          setError(true);
-          setLoading(false);
-        }
+        pc.createOffer()
+          .then((offer) => pc.setLocalDescription(offer).then(() => offer))
+          .then((offer) =>
+            fetch(`${go2rtcUrl}/api/webrtc?src=${encodeURIComponent(streamName)}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/sdp" },
+              body: offer.sdp,
+            })
+          )
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.text();
+          })
+          .then((sdp) => pc.setRemoteDescription({ type: "answer", sdp }))
+          .catch(() => {
+            clearTimeout(timer);
+            done(false);
+          });
       });
     }
 
-    // Start with MSE (best H.265 support)
-    startMSE();
+    async function tryHLS(streamName: string): Promise<boolean> {
+      return new Promise((resolve) => {
+        if (cancelledRef.current) { resolve(false); return; }
+
+        import("hls.js")
+          .then(({ default: Hls }) => {
+            if (!Hls.isSupported() || !video || cancelledRef.current) {
+              resolve(false);
+              return;
+            }
+
+            let resolved = false;
+            const done = (success: boolean) => {
+              if (!resolved) {
+                resolved = true;
+                if (!success) hls.destroy();
+                resolve(success);
+              }
+            };
+
+            const timer = setTimeout(() => done(false), 8000);
+
+            const hls = new Hls({
+              liveDurationInfinity: true,
+              enableWorker: true,
+              lowLatencyMode: true,
+            });
+
+            hls.loadSource(
+              `${go2rtcUrl}/api/stream.m3u8?src=${encodeURIComponent(streamName)}`
+            );
+            hls.attachMedia(video);
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              if (!cancelledRef.current) {
+                video.play().catch(() => {});
+                setLoading(false);
+                setError(false);
+                setActiveStream(streamName);
+                clearTimeout(timer);
+                done(true);
+              }
+            });
+
+            hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
+              if (data.fatal) {
+                clearTimeout(timer);
+                done(false);
+              }
+            });
+          })
+          .catch(() => resolve(false));
+      });
+    }
+
+    async function tryAllCandidates() {
+      const candidates = getCandidates(cameraName);
+
+      for (const candidate of candidates) {
+        if (cancelledRef.current) break;
+
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[VideoPlayer] Trying WebRTC: ${candidate}`);
+        }
+
+        // Try WebRTC first
+        const webrtcOk = await tryWebRTC(candidate);
+        if (webrtcOk || cancelledRef.current) return;
+
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[VideoPlayer] Trying HLS: ${candidate}`);
+        }
+
+        // Try HLS fallback
+        const hlsOk = await tryHLS(candidate);
+        if (hlsOk || cancelledRef.current) return;
+      }
+
+      // All candidates exhausted
+      if (!cancelledRef.current) {
+        setErrorMsg("Stream no disponible — Verifique la conexión RTSP de la cámara");
+        setError(true);
+        setLoading(false);
+      }
+    }
+
+    tryAllCandidates();
 
     return () => {
-      cancelled = true;
-      pc?.close();
-      ws?.close();
+      cancelledRef.current = true;
+      currentPc?.close();
     };
-  }, [cameraName, isOnline, go2rtcUrl]);
+  }, [cameraName, isOnline, go2rtcUrl, getCandidates]);
 
   if (!isOnline) {
     return (
@@ -246,7 +227,10 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
     <div className={`relative bg-black rounded-lg overflow-hidden ${className}`}>
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+          <div className="text-center">
+            <Loader2 className="mx-auto h-8 w-8 animate-spin text-blue-500" />
+            <p className="text-xs text-gray-400 mt-2">Conectando...</p>
+          </div>
         </div>
       )}
       {error && (
@@ -264,6 +248,11 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
         muted
         className="w-full h-full object-contain"
       />
+      {activeStream && process.env.NODE_ENV === "development" && (
+        <div className="absolute bottom-1 left-1 text-[10px] bg-black/50 text-green-400 px-1.5 py-0.5 rounded font-mono">
+          {activeStream}
+        </div>
+      )}
     </div>
   );
 }

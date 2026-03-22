@@ -1,5 +1,7 @@
 # go2rtc configuration - DNS Vision Pro
-# Hikvision cameras - multiple source fallback
+# Hikvision cameras with H.264 transcoded variants for browser compatibility.
+# Base streams preserve original codec (H.265/H.264) for recording/detection.
+# *_h264 streams transcode to H.264+Opus for WebRTC/HLS playback.
 
 api:
   listen: ":1984"
@@ -8,9 +10,22 @@ webrtc:
   listen: ":8555"
 
 streams:
+  # --- Camera 1 (192.168.8.26) ---
   cam_001:
     - "rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/101"
+  cam_001_h264:
+    - "ffmpeg:cam_001#video=h264#audio=opus"
+  cam_001_sub:
     - "rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/102"
+  cam_001_sub_h264:
+    - "ffmpeg:cam_001_sub#video=h264#audio=opus"
+
+  # --- Camera 2 (192.168.8.64 - Fisheye) ---
   cam_002:
     - "rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/101"
+  cam_002_h264:
+    - "ffmpeg:cam_002#video=h264#audio=opus"
+  cam_002_sub:
     - "rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/102"
+  cam_002_sub_h264:
+    - "ffmpeg:cam_002_sub#video=h264#audio=opus"
