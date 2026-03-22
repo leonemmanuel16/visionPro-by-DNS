@@ -94,6 +94,44 @@ CREATE TABLE alert_rules (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Persons (Face Recognition Database)
+CREATE TABLE persons (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(200) NOT NULL,
+    role VARCHAR(50),
+    department VARCHAR(100),
+    notes TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Face Embeddings (128-dim vectors from face_recognition library)
+CREATE TABLE face_embeddings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    person_id UUID REFERENCES persons(id) ON DELETE CASCADE,
+    embedding vector(128),
+    photo_path TEXT,
+    source VARCHAR(20) DEFAULT 'upload',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_face_embeddings_person ON face_embeddings(person_id);
+
+-- Unknown Faces (auto-expire after 30 days)
+CREATE TABLE unknown_faces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    embedding vector(128),
+    thumbnail_path TEXT,
+    camera_id UUID REFERENCES cameras(id) ON DELETE SET NULL,
+    first_seen TIMESTAMPTZ DEFAULT NOW(),
+    last_seen TIMESTAMPTZ DEFAULT NOW(),
+    detection_count INTEGER DEFAULT 1,
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '30 days'
+);
+
+CREATE INDEX idx_unknown_faces_expires ON unknown_faces(expires_at);
+
 -- Initial admin user (password: admin123)
 -- Hash generated with bcrypt, rounds=12 — password: admin
 INSERT INTO users (username, email, password_hash, role) VALUES

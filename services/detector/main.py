@@ -20,6 +20,7 @@ from frame_grabber import FrameGrabber
 from tracker import ObjectTracker
 from zone_manager import ZoneManager
 from event_publisher import EventPublisher
+from face_recognizer import FaceRecognizer
 
 structlog.configure(
     processors=[
@@ -92,17 +93,20 @@ class DetectorService:
         # Initialize zone manager
         zone_manager = ZoneManager(self.db_pool)
 
+        # Initialize face recognizer
+        face_recognizer = FaceRecognizer(self.db_pool)
+
         # Start detection for existing cameras
-        await self._start_camera_detections(detector, publisher, zone_manager)
+        await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
 
         # Listen for camera events (new cameras, removed cameras)
         listener_task = asyncio.create_task(
-            self._listen_camera_events(detector, publisher, zone_manager)
+            self._listen_camera_events(detector, publisher, zone_manager, face_recognizer)
         )
 
         # Periodically refresh camera list
         refresh_task = asyncio.create_task(
-            self._refresh_loop(detector, publisher, zone_manager)
+            self._refresh_loop(detector, publisher, zone_manager, face_recognizer)
         )
 
         log.info("detector.started")
@@ -112,7 +116,7 @@ class DetectorService:
         except asyncio.CancelledError:
             log.info("detector.shutting_down")
 
-    async def _start_camera_detections(self, detector, publisher, zone_manager):
+    async def _start_camera_detections(self, detector, publisher, zone_manager, face_recognizer):
         """Start detection tasks for all enabled cameras."""
         async with self.db_pool.acquire() as conn:
             cameras = await conn.fetch(
@@ -126,14 +130,14 @@ class DetectorService:
                 if stream_url:
                     task = asyncio.create_task(
                         self._detection_loop(
-                            cam_id, cam["name"], stream_url, detector, publisher, zone_manager
+                            cam_id, cam["name"], stream_url, detector, publisher, zone_manager, face_recognizer
                         )
                     )
                     self.camera_tasks[cam_id] = task
                     log.info("detector.camera_started", camera_id=cam_id, name=cam["name"])
 
     async def _detection_loop(
-        self, camera_id, camera_name, stream_url, detector, publisher, zone_manager
+        self, camera_id, camera_name, stream_url, detector, publisher, zone_manager, face_recognizer
     ):
         """Main detection loop for a single camera."""
         grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url)
@@ -169,6 +173,33 @@ class DetectorService:
                 # Filter by zones
                 filtered = zone_manager.filter_detections(tracked, zones)
 
+                # Face recognition for person detections
+                for det in filtered:
+                    if det.label == "person" and face_recognizer.available:
+                        try:
+                            match = await face_recognizer.recognize(frame, det.bbox)
+                            if match:
+                                # Attach person info to detection metadata
+                                if not hasattr(det, "metadata") or det.metadata is None:
+                                    det.metadata = {}
+                                det.metadata["person_id"] = match.person_id
+                                det.metadata["person_name"] = match.person_name
+                                det.metadata["face_confidence"] = f"{match.confidence:.2f}"
+                                det.label = f"person:{match.person_name}"
+                            else:
+                                # Try to save unknown face
+                                result = face_recognizer.detect_and_encode(frame, det.bbox)
+                                if result:
+                                    _, encodings = result
+                                    if encodings:
+                                        await face_recognizer.save_unknown_face(
+                                            encodings[0],
+                                            "",  # thumbnail saved by publisher
+                                            camera_id,
+                                        )
+                        except Exception as e:
+                            log.debug("face_recognition.error", error=str(e))
+
                 # Publish events for new detections
                 for det in filtered:
                     await publisher.publish(
@@ -190,7 +221,7 @@ class DetectorService:
 
         grabber.release()
 
-    async def _listen_camera_events(self, detector, publisher, zone_manager):
+    async def _listen_camera_events(self, detector, publisher, zone_manager, face_recognizer):
         """Listen for camera add/remove events on Redis Stream."""
         last_id = "$"
         while self.running:
@@ -203,7 +234,7 @@ class DetectorService:
                         last_id = entry_id
                         event_type = data.get("type")
                         if event_type in ("camera_discovered", "camera_online"):
-                            await self._start_camera_detections(detector, publisher, zone_manager)
+                            await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
                         elif event_type == "camera_offline":
                             cam_id = data.get("camera_id")
                             if cam_id in self.camera_tasks:
@@ -215,12 +246,12 @@ class DetectorService:
                 log.warning("detector.event_listener_error", error=str(e))
                 await asyncio.sleep(5)
 
-    async def _refresh_loop(self, detector, publisher, zone_manager):
+    async def _refresh_loop(self, detector, publisher, zone_manager, face_recognizer):
         """Periodically refresh camera list and zones."""
         while self.running:
             await asyncio.sleep(60)
             try:
-                await self._start_camera_detections(detector, publisher, zone_manager)
+                await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
             except Exception as e:
                 log.warning("detector.refresh_error", error=str(e))
 
