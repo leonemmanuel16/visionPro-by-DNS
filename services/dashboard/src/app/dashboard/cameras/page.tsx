@@ -216,6 +216,11 @@ export default function CamerasPage() {
       model: formData.model.trim() || undefined,
     };
 
+    // Always save locally first
+    saveCustomCamera(newCam);
+    setCameras((prev) => [...prev, newCam]);
+
+    // Try to also save to API
     try {
       await api.post("/cameras", {
         name: formData.name.trim(),
@@ -228,12 +233,8 @@ export default function CamerasPage() {
         model: formData.model.trim() || undefined,
         camera_type: formData.camera_type,
       });
-      // API available — reload from server
-      await loadCameras();
     } catch {
-      // API not available — add locally and persist
-      setCameras((prev) => [...prev, newCam]);
-      saveCustomCamera(newCam);
+      // API not available — camera already saved locally
     }
 
     // Reset form and close
