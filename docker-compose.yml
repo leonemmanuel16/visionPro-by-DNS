@@ -28,6 +28,7 @@ services:
 
   detector:
     build: ./services/detector
+    network_mode: host
     restart: unless-stopped
     # Uncomment below if you have NVIDIA GPU:
     # deploy:
@@ -38,15 +39,15 @@ services:
     #           count: 1
     #           capabilities: [gpu]
     environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@postgres:5432/visionai
-      - MINIO_ENDPOINT=minio:9000
+      - REDIS_URL=redis://localhost:6379
+      - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@localhost:5432/visionai
+      - MINIO_ENDPOINT=localhost:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
       - MINIO_SECRET_KEY=${MINIO_PASSWORD}
-      - MODEL_NAME=${MODEL_NAME:-yolov10n}
-      - DETECTION_FPS=${DETECTION_FPS:-3}
-      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.45}
-      - GO2RTC_URL=http://host.docker.internal:1984
+      - MODEL_NAME=${MODEL_NAME:-yolov10s}
+      - DETECTION_FPS=${DETECTION_FPS:-5}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.80}
+      - GO2RTC_URL=http://localhost:1984
       - DEVICE=cpu
     depends_on:
       - go2rtc
