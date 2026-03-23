@@ -107,6 +107,30 @@ async def add_camera(
     return camera
 
 
+@router.post("/{camera_id}/toggle-detection", status_code=200)
+async def toggle_detection(
+    camera_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Toggle detection on/off for a camera. Publishes event to stop/start detector."""
+    camera = await get_camera(db, camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    new_state = not camera.is_enabled
+    await update_camera(db, camera_id, {"is_enabled": new_state})
+
+    event_type = "camera_online" if new_state else "camera_offline"
+    await _publish_camera_event(event_type, str(camera_id), camera.ip_address)
+
+    return {
+        "camera_id": str(camera_id),
+        "detection_enabled": new_state,
+        "message": f"Detección {'activada' if new_state else 'pausada'} para {camera.name}",
+    }
+
+
 @router.put("/{camera_id}", response_model=CameraResponse)
 async def update_camera_route(
     camera_id: UUID,

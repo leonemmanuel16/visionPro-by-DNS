@@ -126,7 +126,11 @@ class DetectorService:
         for cam in cameras:
             cam_id = str(cam["id"])
             if cam_id not in self.camera_tasks:
-                stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
+                # Use go2rtc as RTSP proxy to avoid exhausting camera's RTSP session limit
+                cam_id_short = cam_id.replace("-", "")[:12]
+                go2rtc_stream = f"rtsp://localhost:8554/cam_{cam_id_short}_sub"
+                # Fallback to direct RTSP if go2rtc proxy not available
+                stream_url = go2rtc_stream if self.go2rtc_url else (cam["rtsp_sub_stream"] or cam["rtsp_main_stream"])
                 if stream_url:
                     task = asyncio.create_task(
                         self._detection_loop(
