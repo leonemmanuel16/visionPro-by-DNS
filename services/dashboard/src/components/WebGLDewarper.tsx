@@ -24,7 +24,17 @@ void main() {
 }`;
 
 // Fragment shader — equidistant fisheye → rectilinear (flat) projection
-// Designed for ceiling-mounted fisheye cameras (Hikvision, Dahua, etc.)
+// For ceiling-mounted fisheye cameras (Hikvision, Dahua, etc.)
+//
+// Coordinate system:
+//   Fisheye optical axis = +Z (pointing DOWN from ceiling to floor)
+//   Center of fisheye image = theta=0 (looking straight down)
+//   Edge of fisheye circle = theta=PI/2 (looking at horizon)
+//
+// Virtual camera:
+//   yaw = rotation around Z (which wall to look at)
+//   pitch = tilt from Z toward horizon (0°=floor, 90°=horizon)
+//   fov = field of view of the flat output
 const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
@@ -32,45 +42,57 @@ in vec2 v_texCoord;
 out vec4 fragColor;
 
 uniform sampler2D u_video;
-uniform float u_yaw;      // radians
-uniform float u_pitch;    // radians
-uniform float u_fov;      // radians (horizontal FOV)
-uniform float u_centerX;  // fisheye center X (0-1)
-uniform float u_centerY;  // fisheye center Y (0-1)
-uniform float u_radius;   // fisheye radius (0-1)
-uniform float u_aspect;   // output aspect ratio (w/h)
+uniform float u_yaw;      // radians — which direction to look
+uniform float u_pitch;    // radians — tilt (0=down, PI/2=horizon)
+uniform float u_fov;      // radians — output field of view
+uniform float u_centerX;  // fisheye center in texture (0-1)
+uniform float u_centerY;  // fisheye center in texture (0-1)
+uniform float u_radius;   // fisheye circle radius in texture coords
+uniform float u_aspect;   // output width/height ratio
 
 const float PI = 3.14159265359;
 
 void main() {
-  // Output pixel to normalized coordinates [-1, 1]
-  float halfFov = u_fov * 0.5;
-  float nx = (v_texCoord.x - 0.5) * 2.0;
-  float ny = (v_texCoord.y - 0.5) * 2.0;
+  // Output pixel to normalized [-1, 1]
+  float x = (v_texCoord.x - 0.5) * 2.0;
+  float y = (0.5 - v_texCoord.y) * 2.0;  // flip Y so up is positive
 
-  // Rectilinear → angular coordinates
-  // x,y on the virtual flat screen → longitude,latitude on sphere
-  float lon = u_yaw + atan(nx * tan(halfFov) * u_aspect, 1.0);
-  float lat = u_pitch + atan(ny * tan(halfFov), sqrt(1.0 + pow(nx * tan(halfFov) * u_aspect, 2.0)));
+  // Ray in virtual camera space (pinhole model, looking along +Z)
+  float f = 1.0 / tan(u_fov * 0.5);
+  vec3 ray = normalize(vec3(x * u_aspect, y, f));
 
-  // Clamp latitude to avoid wrapping
-  lat = clamp(lat, -PI * 0.5, PI * 0.5);
+  // Rotate ray: first pitch around X axis (tilt from Z toward XY plane)
+  float cp = cos(u_pitch), sp = sin(u_pitch);
+  vec3 pitched = vec3(
+    ray.x,
+    ray.y * cp - ray.z * sp,
+    ray.y * sp + ray.z * cp
+  );
 
-  // Spherical → equidistant fisheye mapping
-  // For ceiling mount: theta is angle from nadir (straight down)
-  // theta=0 is center of fisheye, theta=PI/2 is the edge
-  float theta = PI * 0.5 - lat;  // Convert from latitude to polar angle from center
-  float phi = lon;
+  // Then yaw around Z axis (rotate in the XY plane)
+  float cy = cos(u_yaw), sy = sin(u_yaw);
+  vec3 dir = vec3(
+    pitched.x * cy - pitched.y * sy,
+    pitched.x * sy + pitched.y * cy,
+    pitched.z
+  );
 
-  // Equidistant projection: r is proportional to theta
-  float r = (theta / PI) * u_radius * 2.0;
+  // Convert 3D direction to equidistant fisheye coordinates
+  // theta = angle from +Z axis (optical axis, pointing down)
+  float theta = acos(clamp(dir.z, -1.0, 1.0));
+  // phi = angle in XY plane
+  float phi = atan(dir.y, dir.x);
+
+  // Equidistant projection: distance from center proportional to theta
+  // For 180° fisheye: theta goes from 0 to PI/2, mapping to 0 to radius
+  float r = (theta / (PI * 0.5)) * u_radius;
 
   // Map to texture coordinates
   float u = u_centerX + r * cos(phi);
-  float v = u_centerY - r * sin(phi);  // Negative because texture Y is flipped
+  float v = u_centerY + r * sin(phi);
 
   // Bounds check
-  if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) {
+  if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 || theta > PI * 0.5 * 1.1) {
     fragColor = vec4(0.0, 0.0, 0.0, 1.0);
   } else {
     fragColor = texture(u_video, vec2(u, v));
@@ -300,11 +322,11 @@ export function WebGLDewarper({
   videoElement,
   mode,
   initialYaw = 0,
-  initialPitch = 0,
+  initialPitch = 70,
   initialFov = 90,
-  centerX = 0.5,
-  centerY = 0.5,
-  radius = 0.45,  // Hikvision fisheye: circle takes ~90% of frame
+  centerX = 0.50,
+  centerY = 0.50,
+  radius = 0.48,  // Hikvision ceiling fisheye: circle fills ~96% of frame height
   className = "",
 }: WebGLDewarperProps) {
   if (!videoElement) {
@@ -319,10 +341,10 @@ export function WebGLDewarper({
     return (
       <div className={`grid grid-cols-2 gap-2 ${className}`}>
         {[
-          { yaw: 0, pitch: -30, label: "Vista 1 — Norte" },
-          { yaw: 90, pitch: -30, label: "Vista 2 — Este" },
-          { yaw: 180, pitch: -30, label: "Vista 3 — Sur" },
-          { yaw: 270, pitch: -30, label: "Vista 4 — Oeste" },
+          { yaw: 0, pitch: 70, label: "Vista 1 — Norte" },
+          { yaw: 90, pitch: 70, label: "Vista 2 — Este" },
+          { yaw: 180, pitch: 70, label: "Vista 3 — Sur" },
+          { yaw: 270, pitch: 70, label: "Vista 4 — Oeste" },
         ].map((q, i) => (
           <div key={i} className="relative rounded-lg overflow-hidden border border-gray-200">
             <DewarperCanvas
@@ -350,7 +372,7 @@ export function WebGLDewarper({
         <DewarperCanvas
           videoElement={videoElement}
           yaw={0}
-          pitch={0}
+          pitch={60}
           fov={160}
           centerX={centerX}
           centerY={centerY}
