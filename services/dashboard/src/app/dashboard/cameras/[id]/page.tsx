@@ -185,10 +185,17 @@ export default function CameraDetailPage() {
   const handleSaveCameraConfig = async () => {
     setEditSaving(true);
     try {
-      await api.put(`/cameras/${id}`, {
+      const updateData: Record<string, any> = {
         name: editName,
         location: editLocation,
-      });
+        manufacturer: editManufacturer,
+        model: editModel,
+        camera_type: editCameraType,
+      };
+      if (editPassword) {
+        updateData.password = editPassword;
+      }
+      await api.put(`/cameras/${id}`, updateData);
       // Update local state
       setCamera((prev) => prev ? {
         ...prev,

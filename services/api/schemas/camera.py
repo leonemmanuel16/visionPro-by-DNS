@@ -45,6 +45,7 @@ class CameraResponse(BaseModel):
     mac_address: str | None
     rtsp_main_stream: str | None
     rtsp_sub_stream: str | None
+    camera_type: str | None
     has_ptz: bool
     location: str | None
     is_enabled: bool
