@@ -21,10 +21,11 @@ class ObjectTracker:
     """Tracks objects across frames using ByteTrack."""
 
     def __init__(self):
+        # supervision 0.18.0 uses: track_thresh, track_buffer, match_thresh, frame_rate
         self.tracker = sv.ByteTrack(
-            track_activation_threshold=0.25,
-            lost_track_buffer=30,
-            minimum_matching_threshold=0.8,
+            track_thresh=0.25,
+            track_buffer=30,
+            match_thresh=0.8,
             frame_rate=5,
         )
         self.seen_ids: set[int] = set()
