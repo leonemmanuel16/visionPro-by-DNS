@@ -23,7 +23,8 @@ void main() {
   v_texCoord = a_position * 0.5 + 0.5;
 }`;
 
-// Fragment shader — equidistant fisheye → rectilinear projection
+// Fragment shader — equidistant fisheye → rectilinear (flat) projection
+// Designed for ceiling-mounted fisheye cameras (Hikvision, Dahua, etc.)
 const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
@@ -39,43 +40,40 @@ uniform float u_centerY;  // fisheye center Y (0-1)
 uniform float u_radius;   // fisheye radius (0-1)
 uniform float u_aspect;   // output aspect ratio (w/h)
 
-mat3 rotationY(float angle) {
-  float c = cos(angle); float s = sin(angle);
-  return mat3(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c);
-}
-
-mat3 rotationX(float angle) {
-  float c = cos(angle); float s = sin(angle);
-  return mat3(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c);
-}
+const float PI = 3.14159265359;
 
 void main() {
-  // Convert output pixel to normalized coords centered at 0
+  // Output pixel to normalized coordinates [-1, 1]
   float halfFov = u_fov * 0.5;
-  float x = (v_texCoord.x - 0.5) * 2.0 * tan(halfFov) * u_aspect;
-  float y = (v_texCoord.y - 0.5) * 2.0 * tan(halfFov);
+  float nx = (v_texCoord.x - 0.5) * 2.0;
+  float ny = (v_texCoord.y - 0.5) * 2.0;
 
-  // Create 3D ray direction (pinhole camera model, looking down -Z)
-  vec3 ray = normalize(vec3(x, -y, -1.0));
+  // Rectilinear → angular coordinates
+  // x,y on the virtual flat screen → longitude,latitude on sphere
+  float lon = u_yaw + atan(nx * tan(halfFov) * u_aspect, 1.0);
+  float lat = u_pitch + atan(ny * tan(halfFov), sqrt(1.0 + pow(nx * tan(halfFov) * u_aspect, 2.0)));
 
-  // Rotate ray by yaw (around Y) and pitch (around X)
-  ray = rotationY(u_yaw) * rotationX(u_pitch) * ray;
+  // Clamp latitude to avoid wrapping
+  lat = clamp(lat, -PI * 0.5, PI * 0.5);
 
-  // Convert to spherical coordinates
-  float theta = acos(clamp(-ray.z, -1.0, 1.0)); // angle from optical axis (camera looks -Z)
-  float phi = atan(ray.y, ray.x);                // azimuth
+  // Spherical → equidistant fisheye mapping
+  // For ceiling mount: theta is angle from nadir (straight down)
+  // theta=0 is center of fisheye, theta=PI/2 is the edge
+  float theta = PI * 0.5 - lat;  // Convert from latitude to polar angle from center
+  float phi = lon;
 
-  // Map to fisheye texture coordinates (equidistant projection)
-  float r = (theta / 3.14159265) * u_radius * 2.0;
+  // Equidistant projection: r is proportional to theta
+  float r = (theta / PI) * u_radius * 2.0;
 
+  // Map to texture coordinates
   float u = u_centerX + r * cos(phi);
-  float v = u_centerY + r * sin(phi);
+  float v = u_centerY - r * sin(phi);  // Negative because texture Y is flipped
 
-  // Check bounds
-  if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 || r > u_radius) {
+  // Bounds check
+  if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) {
     fragColor = vec4(0.0, 0.0, 0.0, 1.0);
   } else {
-    fragColor = texture(u_video, vec2(u, 1.0 - v));
+    fragColor = texture(u_video, vec2(u, v));
   }
 }`;
 
@@ -306,7 +304,7 @@ export function WebGLDewarper({
   initialFov = 90,
   centerX = 0.5,
   centerY = 0.5,
-  radius = 0.5,
+  radius = 0.45,  // Hikvision fisheye: circle takes ~90% of frame
   className = "",
 }: WebGLDewarperProps) {
   if (!videoElement) {
@@ -321,16 +319,16 @@ export function WebGLDewarper({
     return (
       <div className={`grid grid-cols-2 gap-2 ${className}`}>
         {[
-          { yaw: 0, label: "Vista 1 — Norte" },
-          { yaw: 90, label: "Vista 2 — Este" },
-          { yaw: 180, label: "Vista 3 — Sur" },
-          { yaw: 270, label: "Vista 4 — Oeste" },
+          { yaw: 0, pitch: -30, label: "Vista 1 — Norte" },
+          { yaw: 90, pitch: -30, label: "Vista 2 — Este" },
+          { yaw: 180, pitch: -30, label: "Vista 3 — Sur" },
+          { yaw: 270, pitch: -30, label: "Vista 4 — Oeste" },
         ].map((q, i) => (
           <div key={i} className="relative rounded-lg overflow-hidden border border-gray-200">
             <DewarperCanvas
               videoElement={videoElement}
               yaw={q.yaw}
-              pitch={0}
+              pitch={q.pitch}
               fov={90}
               centerX={centerX}
               centerY={centerY}
