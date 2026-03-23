@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from "react";
 import { Loader2, WifiOff, VideoOff } from "lucide-react";
 import { getGo2rtcUrl } from "@/lib/urls";
 
@@ -21,9 +21,17 @@ interface VideoPlayerProps {
  *
  * For each candidate: WebRTC first, then HLS fallback.
  * If all fail: "Stream no disponible".
+ *
+ * Supports forwardRef to expose the internal <video> element for WebGL dewarping.
  */
-export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPlayerProps) {
+export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(function VideoPlayer(
+  { cameraName, isOnline = true, className },
+  externalRef,
+) {
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Expose the video element via the forwarded ref
+  useImperativeHandle(externalRef, () => videoRef.current!, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [errorMsg, setErrorMsg] = useState("Stream no disponible");
@@ -255,4 +263,4 @@ export function VideoPlayer({ cameraName, isOnline = true, className }: VideoPla
       )}
     </div>
   );
-}
+});

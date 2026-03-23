@@ -28,7 +28,7 @@ class Go2RTCConfigManager:
         """Rebuild go2rtc.yaml from all enabled cameras and reload."""
         async with self.db.acquire() as conn:
             cameras = await conn.fetch(
-                """SELECT id, name, ip_address, rtsp_main_stream, rtsp_sub_stream, camera_type
+                """SELECT id, name, ip_address, rtsp_main_stream, rtsp_sub_stream
                    FROM cameras WHERE is_enabled = true AND rtsp_main_stream IS NOT NULL"""
             )
 
@@ -63,21 +63,6 @@ class Go2RTCConfigManager:
                     f"ffmpeg:{safe_name}_sub#video=h264#audio=opus"
                 ]
 
-            # --- Fisheye dewarped quadrants ---
-            # If camera is fisheye, generate 4 dewarped flat views using FFmpeg v360 filter
-            camera_type = cam.get("camera_type", "") or ""
-            if camera_type.lower() in ("fisheye", "ojo de pez", "ojodepez"):
-                rtsp_src = cam["rtsp_main_stream"]
-                # 4 quadrants at yaw 0°, 90°, 180°, 270° with 90° FOV each
-                for qi, yaw in enumerate([0, 90, 180, 270]):
-                    # go2rtc ffmpeg source with video filter pipeline:
-                    # - Input: RTSP from camera
-                    # - Filter: v360 fisheye→flat dewarping
-                    # - Output: H.264 for browser
-                    streams[f"{safe_name}_dw{qi}"] = [
-                        f"ffmpeg:{rtsp_src}#video=h264#width=640#height=480"
-                        f"#raw=-vf#raw=v360=input=fisheye:output=flat:h_fov=90:v_fov=90:yaw={yaw}"
-                    ]
 
         config = {
             "api": {"listen": ":1984"},
