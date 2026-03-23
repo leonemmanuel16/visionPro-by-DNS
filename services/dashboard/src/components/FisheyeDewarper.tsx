@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { Circle, Grid2X2, Maximize2, Move, Panorama } from "lucide-react";
+import { Circle, Grid2X2, Maximize2, Move, ScanLine } from "lucide-react";
 import { VideoPlayer } from "./VideoPlayer";
 import { WebGLDewarper } from "./WebGLDewarper";
 
