@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { api } from "@/lib/api";
+import { getApiUrl } from "@/lib/urls";
 import {
   Plus,
   Upload,
@@ -180,9 +182,44 @@ export default function DatabasePage() {
     setIdentifyDept("Externo");
   };
 
-  const handleDeleteUnknown = (id: string) => {
+  const handleDeleteUnknown = async (id: string) => {
+    try { await api.del(`/unknown-faces/${id}`); } catch { /* local only */ }
     setUnknownFaces((prev) => prev.filter((f) => f.id !== id));
   };
+
+  // Load persons from API on mount
+  useEffect(() => {
+    api.get<any[]>("/persons").then((data) => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        setPeople(data.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          role: p.role || "Empleado",
+          department: p.department || "",
+          photos: [],
+          photoCount: p.photo_count || 0,
+          lastSeen: "",
+          lastCamera: "",
+          status: p.is_active ? "active" : "inactive",
+          created_at: p.created_at?.split("T")[0] || "",
+        })));
+      }
+    }).catch(() => { /* keep demo data */ });
+
+    api.get<any[]>("/unknown-faces").then((data) => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        setUnknownFaces(data.map((f: any) => ({
+          id: f.id,
+          thumbnailColor: "bg-gray-300",
+          firstSeen: f.first_seen || "",
+          lastSeen: f.last_seen || "",
+          camera: f.camera_id || "",
+          detectionCount: f.detection_count || 1,
+          daysRemaining: f.days_remaining || 30,
+        })));
+      }
+    }).catch(() => { /* keep demo data */ });
+  }, []);
 
   const filteredPeople = people.filter((p) => {
     const matchSearch =
@@ -192,11 +229,44 @@ export default function DatabasePage() {
     return matchSearch && matchRole;
   });
 
-  const handleAddPerson = () => {
+  const handleAddPerson = async () => {
     if (!formData.name.trim()) {
       setFormError("El nombre es obligatorio");
       return;
     }
+
+    // Try API first
+    try {
+      const result = await api.post<any>("/persons", {
+        name: formData.name.trim(),
+        role: formData.role,
+        department: formData.department,
+      });
+      if (result && result.id) {
+        const newPerson: Person = {
+          id: result.id,
+          name: result.name,
+          role: result.role || formData.role,
+          department: result.department || formData.department,
+          photos: [],
+          photoCount: 0,
+          status: "active",
+          created_at: new Date().toISOString().split("T")[0],
+        };
+        setPeople((prev) => [...prev, newPerson]);
+        setFormData({ name: "", role: "Empleado", department: "Sistemas" });
+        setFormError("");
+    setShowAddModal(false);
+        // Open upload modal for the new person
+        setSelectedPerson(newPerson);
+        setShowUploadModal(true);
+        return;
+      }
+    } catch {
+      // API not available — fallback to local
+    }
+
+    // Fallback: local only
     const newPerson: Person = {
       id: `p-${Date.now()}`,
       name: formData.name.trim(),
@@ -211,23 +281,68 @@ export default function DatabasePage() {
     setFormData({ name: "", role: "Empleado", department: "Sistemas" });
     setFormError("");
     setShowAddModal(false);
-    // Open upload modal for the new person
     setSelectedPerson(newPerson);
     setShowUploadModal(true);
   };
 
-  const handleDeletePerson = (id: string) => {
+  const handleDeletePerson = async (id: string) => {
+    try { await api.del(`/persons/${id}`); } catch { /* local only */ }
     setPeople((prev) => prev.filter((p) => p.id !== id));
     if (selectedPerson?.id === id) setSelectedPerson(null);
   };
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+
   const handleUploadPhoto = (personId: string) => {
-    // Simulate upload — in production this calls the API
-    setPeople((prev) =>
-      prev.map((p) =>
-        p.id === personId ? { ...p, photoCount: p.photoCount + 1 } : p
-      )
-    );
+    // Trigger the hidden file input
+    if (fileInputRef.current) {
+      fileInputRef.current.dataset.personId = personId;
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    const personId = e.target.dataset.personId;
+    if (!files || files.length === 0 || !personId) return;
+
+    setUploading(true);
+    setUploadMsg(null);
+
+    for (const file of Array.from(files)) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+        const res = await fetch(`${getApiUrl()}/api/v1/persons/${personId}/photos`, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: formData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setPeople((prev) =>
+            prev.map((p) =>
+              p.id === personId ? { ...p, photoCount: p.photoCount + 1 } : p
+            )
+          );
+          setUploadMsg(data.message || "Foto subida correctamente");
+        } else {
+          const err = await res.json().catch(() => ({ detail: "Error al subir la foto" }));
+          setUploadMsg(err.detail || "Error al subir la foto");
+        }
+      } catch {
+        setUploadMsg("Error de conexión al subir la foto");
+      }
+    }
+
+    setUploading(false);
+    // Reset input
+    e.target.value = "";
   };
 
   const stats = {
@@ -704,17 +819,59 @@ export default function DatabasePage() {
                 </span>
               </div>
 
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+
               {/* Upload Zone */}
               <div
                 className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-blue-400 transition-colors cursor-pointer"
                 onClick={() => handleUploadPhoto(selectedPerson.id)}
+                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("border-blue-500", "bg-blue-50"); }}
+                onDragLeave={(e) => { e.currentTarget.classList.remove("border-blue-500", "bg-blue-50"); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.remove("border-blue-500", "bg-blue-50");
+                  if (e.dataTransfer.files.length > 0 && fileInputRef.current) {
+                    fileInputRef.current.dataset.personId = selectedPerson.id;
+                    // Create synthetic event
+                    const dt = new DataTransfer();
+                    Array.from(e.dataTransfer.files).forEach((f) => dt.items.add(f));
+                    fileInputRef.current.files = dt.files;
+                    fileInputRef.current.dispatchEvent(new Event("change", { bubbles: true }));
+                  }
+                }}
               >
-                <Upload className="h-10 w-10 text-gray-400 mx-auto mb-3" />
-                <p className="text-sm font-medium text-gray-700">
-                  Haz clic para seleccionar fotos
-                </p>
-                <p className="text-xs text-gray-500 mt-1">JPG, PNG — Máximo 5MB por foto</p>
+                {uploading ? (
+                  <div className="animate-pulse">
+                    <div className="h-10 w-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                    <p className="text-sm font-medium text-blue-600">Subiendo y procesando rostro...</p>
+                  </div>
+                ) : (
+                  <>
+                    <Upload className="h-10 w-10 text-gray-400 mx-auto mb-3" />
+                    <p className="text-sm font-medium text-gray-700">
+                      Haz clic o arrastra fotos aquí
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">JPG, PNG — Se detectará el rostro automáticamente</p>
+                  </>
+                )}
               </div>
+
+              {/* Upload feedback */}
+              {uploadMsg && (
+                <div className={`text-sm p-3 rounded-lg ${
+                  uploadMsg.includes("Error") ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"
+                }`}>
+                  {uploadMsg}
+                </div>
+              )}
 
               {/* Guidelines */}
               <div className="space-y-2">
