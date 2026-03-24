@@ -8,6 +8,10 @@ interface VideoPlayerProps {
   cameraName: string;
   isOnline?: boolean;
   className?: string;
+  /** CSS filter for brightness/contrast/saturation adjustments */
+  videoFilter?: string;
+  /** Use sub-stream for lower quality */
+  preferSubStream?: boolean;
 }
 
 /**
@@ -25,7 +29,7 @@ interface VideoPlayerProps {
  * Supports forwardRef to expose the internal <video> element for WebGL dewarping.
  */
 export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(function VideoPlayer(
-  { cameraName, isOnline = true, className },
+  { cameraName, isOnline = true, className, videoFilter, preferSubStream },
   externalRef,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -42,13 +46,21 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(functi
 
   // Generate ordered candidate list
   const getCandidates = useCallback((base: string): string[] => {
+    if (preferSubStream) {
+      return [
+        `${base}_sub_h264`,   // Sub transcoded H.264 (lowest bandwidth)
+        `${base}_sub`,        // Raw sub-stream
+        `${base}_h264`,       // Main transcoded H.264
+        base,                 // Raw main stream
+      ];
+    }
     return [
       `${base}_h264`,       // Main transcoded H.264
       `${base}_sub_h264`,   // Sub transcoded H.264
       `${base}_sub`,        // Raw sub-stream
       base,                 // Raw main stream
     ];
-  }, []);
+  }, [preferSubStream]);
 
   useEffect(() => {
     if (!isOnline || !videoRef.current) {
@@ -255,6 +267,7 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(functi
         playsInline
         muted
         className="w-full h-full object-contain"
+        style={videoFilter ? { filter: videoFilter } : undefined}
       />
       {activeStream && process.env.NODE_ENV === "development" && (
         <div className="absolute bottom-1 left-1 text-[10px] bg-black/50 text-green-400 px-1.5 py-0.5 rounded font-mono">

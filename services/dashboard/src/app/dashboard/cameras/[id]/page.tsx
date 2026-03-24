@@ -342,7 +342,12 @@ export default function CameraDetailPage() {
               />
             ) : (
               <div className="relative rounded-lg overflow-hidden border border-gray-200">
-                <VideoPlayer cameraName={streamName} isOnline={camera.is_online} className="aspect-video w-full" />
+                <VideoPlayer
+                  cameraName={streamName}
+                  isOnline={camera.is_online}
+                  className="aspect-video w-full"
+                  videoFilter={`brightness(${imageSettings.brightness / 50}) contrast(${imageSettings.contrast / 50}) saturate(${imageSettings.saturation / 50})`}
+                />
                 {camera.is_online && detections.length > 0 && (
                   <DetectionOverlay detections={detections} />
                 )}
