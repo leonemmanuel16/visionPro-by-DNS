@@ -368,6 +368,42 @@ async def identify_unknown_face(
     return {"message": "Face identified and assigned to person"}
 
 
+@router.get("/unknown-faces/{face_id}/thumbnail")
+async def get_unknown_face_thumbnail(
+    face_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the thumbnail image of an unknown face from MinIO."""
+    from fastapi.responses import Response
+    from sqlalchemy import text
+
+    fid = uuid.UUID(face_id)
+    result = await db.execute(
+        text("SELECT thumbnail_path FROM unknown_faces WHERE id = :fid"),
+        {"fid": fid},
+    )
+    row = result.first()
+    if not row or not row[0]:
+        raise HTTPException(404, "Thumbnail not found")
+
+    thumbnail_path = row[0]
+    # thumbnail_path format: "faces/unknown/20260325/abc123.jpg"
+    parts = thumbnail_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(404, "Invalid thumbnail path")
+
+    bucket, object_name = parts[0], parts[1]
+    try:
+        minio = get_minio_client()
+        data = minio.get_object(bucket, object_name)
+        content = data.read()
+        data.close()
+        data.release_conn()
+        return Response(content=content, media_type="image/jpeg")
+    except Exception as e:
+        raise HTTPException(404, f"Thumbnail not available: {str(e)}")
+
+
 @router.delete("/unknown-faces/{face_id}", status_code=204)
 async def delete_unknown_face(
     face_id: str,

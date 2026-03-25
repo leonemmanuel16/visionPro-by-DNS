@@ -116,7 +116,8 @@ const DEPARTMENTS = [
 
 interface UnknownFace {
   id: string;
-  thumbnailColor: string; // placeholder since we don't have real images
+  thumbnailColor: string; // fallback color when no thumbnail
+  thumbnailPath: string;  // actual MinIO path (e.g. "faces/unknown/...")
   firstSeen: string;
   lastSeen: string;
   camera: string;
@@ -125,13 +126,13 @@ interface UnknownFace {
 }
 
 const DEMO_UNKNOWN_FACES: UnknownFace[] = [
-  { id: "uf-001", thumbnailColor: "bg-rose-200", firstSeen: "Hoy 08:23", lastSeen: "Hoy 08:45", camera: "Entrada Principal", detectionCount: 5, daysRemaining: 30 },
-  { id: "uf-002", thumbnailColor: "bg-amber-200", firstSeen: "Hoy 07:15", lastSeen: "Hoy 07:15", camera: "Estacionamiento Norte", detectionCount: 1, daysRemaining: 30 },
-  { id: "uf-003", thumbnailColor: "bg-sky-200", firstSeen: "Ayer 14:30", lastSeen: "Ayer 16:00", camera: "Recepción", detectionCount: 8, daysRemaining: 29 },
-  { id: "uf-004", thumbnailColor: "bg-emerald-200", firstSeen: "Hace 3 días", lastSeen: "Hace 2 días", camera: "Pasillo Piso 2", detectionCount: 3, daysRemaining: 27 },
-  { id: "uf-005", thumbnailColor: "bg-violet-200", firstSeen: "Hace 5 días", lastSeen: "Hace 5 días", camera: "Almacén", detectionCount: 2, daysRemaining: 25 },
-  { id: "uf-006", thumbnailColor: "bg-orange-200", firstSeen: "Hace 12 días", lastSeen: "Hace 10 días", camera: "Entrada Principal", detectionCount: 15, daysRemaining: 18 },
-  { id: "uf-007", thumbnailColor: "bg-pink-200", firstSeen: "Hace 25 días", lastSeen: "Hace 20 días", camera: "Recepción", detectionCount: 4, daysRemaining: 5 },
+  { id: "uf-001", thumbnailColor: "bg-rose-200", thumbnailPath: "", firstSeen: "Hoy 08:23", lastSeen: "Hoy 08:45", camera: "Entrada Principal", detectionCount: 5, daysRemaining: 30 },
+  { id: "uf-002", thumbnailColor: "bg-amber-200", thumbnailPath: "", firstSeen: "Hoy 07:15", lastSeen: "Hoy 07:15", camera: "Estacionamiento Norte", detectionCount: 1, daysRemaining: 30 },
+  { id: "uf-003", thumbnailColor: "bg-sky-200", thumbnailPath: "", firstSeen: "Ayer 14:30", lastSeen: "Ayer 16:00", camera: "Recepción", detectionCount: 8, daysRemaining: 29 },
+  { id: "uf-004", thumbnailColor: "bg-emerald-200", thumbnailPath: "", firstSeen: "Hace 3 días", lastSeen: "Hace 2 días", camera: "Pasillo Piso 2", detectionCount: 3, daysRemaining: 27 },
+  { id: "uf-005", thumbnailColor: "bg-violet-200", thumbnailPath: "", firstSeen: "Hace 5 días", lastSeen: "Hace 5 días", camera: "Almacén", detectionCount: 2, daysRemaining: 25 },
+  { id: "uf-006", thumbnailColor: "bg-orange-200", thumbnailPath: "", firstSeen: "Hace 12 días", lastSeen: "Hace 10 días", camera: "Entrada Principal", detectionCount: 15, daysRemaining: 18 },
+  { id: "uf-007", thumbnailColor: "bg-pink-200", thumbnailPath: "", firstSeen: "Hace 25 días", lastSeen: "Hace 20 días", camera: "Recepción", detectionCount: 4, daysRemaining: 5 },
 ];
 
 export default function DatabasePage() {
@@ -208,9 +209,11 @@ export default function DatabasePage() {
 
     api.get<any[]>("/unknown-faces").then((data) => {
       if (data && Array.isArray(data) && data.length > 0) {
-        setUnknownFaces(data.map((f: any) => ({
+        const colors = ["bg-rose-200", "bg-amber-200", "bg-sky-200", "bg-emerald-200", "bg-violet-200", "bg-pink-200", "bg-teal-200"];
+        setUnknownFaces(data.map((f: any, i: number) => ({
           id: f.id,
-          thumbnailColor: "bg-gray-300",
+          thumbnailColor: colors[i % colors.length],
+          thumbnailPath: f.thumbnail_path || "",
           firstSeen: f.first_seen || "",
           lastSeen: f.last_seen || "",
           camera: f.camera_id || "",
@@ -609,9 +612,21 @@ export default function DatabasePage() {
                       key={face.id}
                       className="border border-gray-200 rounded-lg overflow-hidden hover:border-blue-300 transition-colors"
                     >
-                      {/* Face thumbnail placeholder */}
+                      {/* Face thumbnail */}
                       <div className={`aspect-square ${face.thumbnailColor} flex items-center justify-center relative`}>
-                        <HelpCircle className="h-12 w-12 text-white/60" />
+                        {face.thumbnailPath ? (
+                          <img
+                            src={`${getApiUrl()}/api/v1/unknown-faces/${face.id}/thumbnail`}
+                            alt="Rostro desconocido"
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              // Hide image on error, show fallback icon
+                              (e.target as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        ) : (
+                          <HelpCircle className="h-12 w-12 text-white/60" />
+                        )}
                         {/* Days remaining badge */}
                         <div
                           className={`absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${

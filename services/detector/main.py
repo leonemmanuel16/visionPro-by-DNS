@@ -93,8 +93,15 @@ class DetectorService:
         # Initialize zone manager
         zone_manager = ZoneManager(self.db_pool)
 
-        # Initialize face recognizer
-        face_recognizer = FaceRecognizer(self.db_pool)
+        # Initialize face recognizer (with MinIO for saving face thumbnails)
+        from minio import Minio
+        minio_client = Minio(
+            self.minio_endpoint,
+            access_key=self.minio_access_key,
+            secret_key=self.minio_secret_key,
+            secure=False,
+        )
+        face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
 
         # Start detection for existing cameras
         await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
@@ -193,15 +200,18 @@ class DetectorService:
                                 det.metadata["face_confidence"] = f"{match.confidence:.2f}"
                                 det.label = f"person:{match.person_name}"
                             else:
-                                # Try to save unknown face
+                                # Try to save unknown face with thumbnail
                                 result = face_recognizer.detect_and_encode(frame, det.bbox)
                                 if result:
-                                    _, encodings = result
+                                    face_locations, encodings = result
                                     if encodings:
+                                        face_loc = face_locations[0] if face_locations else None
                                         await face_recognizer.save_unknown_face(
-                                            encodings[0],
-                                            "",  # thumbnail saved by publisher
-                                            camera_id,
+                                            encoding=encodings[0],
+                                            camera_id=camera_id,
+                                            frame=frame,
+                                            person_bbox=det.bbox,
+                                            face_location=face_loc,
                                         )
                         except Exception as e:
                             log.debug("face_recognition.error", error=str(e))

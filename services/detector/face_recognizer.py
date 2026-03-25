@@ -1,11 +1,16 @@
 """Face Recognition — Detect faces, compute embeddings, compare with DB."""
 
+import io
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import asyncpg
+import cv2
 import numpy as np
 import structlog
+from minio import Minio
 
 log = structlog.get_logger()
 
@@ -24,14 +29,16 @@ class FaceMatch:
 class FaceRecognizer:
     """Recognizes faces by comparing face_recognition embeddings against pgvector DB."""
 
-    def __init__(self, db_pool: asyncpg.Pool):
+    def __init__(self, db_pool: asyncpg.Pool, minio_client: Minio | None = None):
         self.db = db_pool
+        self.minio = minio_client
         self._fr = None  # lazy import face_recognition
         self._known_cache: list[tuple[str, str, np.ndarray]] = []  # (person_id, name, embedding)
         self._cache_time: float = 0
         self._cache_ttl: float = 60.0  # refresh cache every 60s
         self._available = False
         self._init_library()
+        self._ensure_bucket()
 
     def _init_library(self):
         """Try to import face_recognition. If not available, face recognition is disabled."""
@@ -43,6 +50,15 @@ class FaceRecognizer:
         except ImportError:
             log.warning("face_recognizer.disabled", reason="face_recognition library not installed")
             self._available = False
+
+    def _ensure_bucket(self):
+        """Ensure the 'faces' bucket exists in MinIO."""
+        if self.minio:
+            try:
+                if not self.minio.bucket_exists("faces"):
+                    self.minio.make_bucket("faces")
+            except Exception as e:
+                log.warning("face_recognizer.bucket_error", error=str(e))
 
     @property
     def available(self) -> bool:
@@ -185,11 +201,75 @@ class FaceRecognizer:
             log.warning("face_recognizer.encoding_error", error=str(e))
             return None
 
-    async def save_unknown_face(
-        self, encoding: np.ndarray, thumbnail_path: str, camera_id: str
-    ) -> None:
-        """Save an unknown face to the DB for later identification."""
+    def _save_face_thumbnail(
+        self, frame: np.ndarray, person_bbox: tuple, face_location: tuple | None = None
+    ) -> str | None:
+        """Crop and save face thumbnail to MinIO.  Returns object path or None."""
+        if not self.minio:
+            return None
         try:
+            x1, y1, x2, y2 = [int(c) for c in person_bbox]
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+
+            if face_location:
+                # face_location is (top, right, bottom, left) WITHIN the crop
+                ft, fr, fb, fl = face_location
+                # Add padding around face (30%)
+                fh = fb - ft
+                fw = fr - fl
+                pad_h = int(fh * 0.3)
+                pad_w = int(fw * 0.3)
+                crop = frame[
+                    max(0, y1 + ft - pad_h): min(h, y1 + fb + pad_h),
+                    max(0, x1 + fl - pad_w): min(w, x1 + fr + pad_w),
+                ]
+            else:
+                # Use upper 40% of person bbox (head area)
+                head_h = int((y2 - y1) * 0.4)
+                crop = frame[y1: y1 + head_h, x1: x2]
+
+            if crop.size == 0:
+                return None
+
+            # Resize to 150x150 for consistent thumbnails
+            crop = cv2.resize(crop, (150, 150))
+
+            _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            data = buffer.tobytes()
+
+            now = datetime.now(timezone.utc)
+            object_name = f"unknown/{now.strftime('%Y%m%d')}/{uuid.uuid4().hex[:12]}.jpg"
+            self.minio.put_object(
+                "faces", object_name, io.BytesIO(data), len(data),
+                content_type="image/jpeg",
+            )
+            return f"faces/{object_name}"
+        except Exception as e:
+            log.warning("face_recognizer.save_thumbnail_failed", error=str(e))
+            return None
+
+    async def save_unknown_face(
+        self,
+        encoding: np.ndarray,
+        camera_id: str,
+        frame: np.ndarray | None = None,
+        person_bbox: tuple | None = None,
+        face_location: tuple | None = None,
+    ) -> None:
+        """Save an unknown face to the DB for later identification.
+
+        Now also saves a cropped face thumbnail to MinIO.
+        """
+        try:
+            # Save thumbnail image
+            thumbnail_path = ""
+            if frame is not None and person_bbox is not None:
+                path = self._save_face_thumbnail(frame, person_bbox, face_location)
+                if path:
+                    thumbnail_path = path
+
             emb_str = "[" + ",".join(f"{v:.6f}" for v in encoding) + "]"
             async with self.db.acquire() as conn:
                 # Check if similar unknown face already exists (distance < 0.5)
@@ -200,19 +280,27 @@ class FaceRecognizer:
                 """, emb_str)
 
                 if existing:
-                    # Update existing
-                    await conn.execute("""
-                        UPDATE unknown_faces
-                        SET last_seen = NOW(), detection_count = detection_count + 1
-                        WHERE id = $1
-                    """, existing)
+                    # Update existing — also update thumbnail if we have a better one
+                    if thumbnail_path:
+                        await conn.execute("""
+                            UPDATE unknown_faces
+                            SET last_seen = NOW(), detection_count = detection_count + 1,
+                                thumbnail_path = COALESCE(NULLIF($2, ''), thumbnail_path)
+                            WHERE id = $1
+                        """, existing, thumbnail_path)
+                    else:
+                        await conn.execute("""
+                            UPDATE unknown_faces
+                            SET last_seen = NOW(), detection_count = detection_count + 1
+                            WHERE id = $1
+                        """, existing)
                 else:
                     # Insert new
                     await conn.execute("""
                         INSERT INTO unknown_faces (embedding, thumbnail_path, camera_id)
                         VALUES ($1::vector, $2, $3)
-                    """, emb_str, thumbnail_path, camera_id if camera_id else None)
+                    """, emb_str, thumbnail_path, uuid.UUID(camera_id) if camera_id else None)
 
-            log.debug("face_recognizer.unknown_saved", camera_id=camera_id)
+            log.debug("face_recognizer.unknown_saved", camera_id=camera_id, thumbnail=thumbnail_path)
         except Exception as e:
             log.warning("face_recognizer.save_unknown_failed", error=str(e))
