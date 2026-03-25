@@ -48,9 +48,16 @@ class EventPublisher:
             if not self.minio.bucket_exists(bucket):
                 self.minio.make_bucket(bucket)
 
-    def _should_debounce(self, camera_id: str, label: str) -> bool:
-        """Check if we should skip this event (debounce)."""
-        key = f"{camera_id}:{label}"
+    def _should_debounce(self, camera_id: str, label: str, tracker_id: int | None = None) -> bool:
+        """Check if we should skip this event (debounce).
+
+        Uses tracker_id when available so each tracked object has its own
+        debounce window.  Falls back to camera+label for untracked objects.
+        """
+        if tracker_id is not None:
+            key = f"{camera_id}:track:{tracker_id}"
+        else:
+            key = f"{camera_id}:{label}"
         now = time.monotonic()
         last = self._last_published.get(key, 0)
         if now - last < self.DEBOUNCE_SECONDS:
@@ -66,8 +73,9 @@ class EventPublisher:
         frame: np.ndarray,
     ) -> None:
         """Process and publish a detection event."""
-        # Only publish new objects or after debounce
-        if not detection.is_new and self._should_debounce(camera_id, detection.label):
+        # Only publish new objects or after debounce (per tracker_id)
+        tid = detection.tracker_id if hasattr(detection, "tracker_id") else None
+        if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
             return
 
         event_id = str(uuid.uuid4())
@@ -140,7 +148,99 @@ class EventPublisher:
             event_id=event_id,
             camera=camera_name,
             label=detection.label,
+            tracker_id=getattr(detection, "tracker_id", None),
             confidence=f"{detection.confidence:.2f}",
+        )
+
+    async def publish_person_count(
+        self,
+        camera_id: str,
+        camera_name: str,
+        person_count: int,
+        person_details: list[dict],
+        frame: np.ndarray,
+    ) -> None:
+        """Publish a person_count event summarising all persons in frame.
+
+        This fires once per frame (debounced) and includes the count and
+        details of each tracked person (tracker_id, person_name, bbox).
+        """
+        if self._should_debounce(camera_id, "person_count"):
+            return
+
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+
+        metadata = {
+            "person_count": person_count,
+            "persons": person_details,
+        }
+        if frame is not None:
+            metadata["frame_width"] = int(frame.shape[1])
+            metadata["frame_height"] = int(frame.shape[0])
+
+        # Save a snapshot with ALL bounding boxes drawn
+        snapshot_path = None
+        try:
+            annotated = frame.copy()
+            for p in person_details:
+                bbox = p.get("bbox")
+                if bbox:
+                    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                    name = p.get("person_name", f"Persona {p.get('tracker_id', '?')}")
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(
+                        annotated, name, (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2,
+                    )
+            # Add count overlay
+            cv2.putText(
+                annotated, f"Personas: {person_count}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2,
+            )
+            _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            data = buffer.tobytes()
+            object_name = f"{timestamp_str}/{event_id}_group.jpg"
+            self.minio.put_object(
+                "snapshots", object_name, io.BytesIO(data), len(data),
+                content_type="image/jpeg",
+            )
+            snapshot_path = f"snapshots/{object_name}"
+        except Exception as e:
+            log.warning("event.group_snapshot_failed", error=str(e))
+
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO events
+                   (id, camera_id, event_type, label, confidence, bbox,
+                    zone_id, snapshot_path, thumbnail_path, metadata, occurred_at)
+                   VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, NULL, $7, $8)""",
+                uuid.UUID(event_id),
+                uuid.UUID(camera_id),
+                "person_count",
+                f"{person_count} personas",
+                1.0,
+                snapshot_path,
+                json.dumps(metadata),
+                now,
+            )
+
+        await self.redis.xadd("detection_events", {
+            "event_id": event_id,
+            "camera_id": camera_id,
+            "camera_name": camera_name,
+            "event_type": "person_count",
+            "label": f"{person_count} personas",
+            "person_count": str(person_count),
+            "occurred_at": now.isoformat(),
+        })
+
+        log.info(
+            "event.person_count",
+            camera=camera_name,
+            count=person_count,
+            names=[p.get("person_name", "?") for p in person_details],
         )
 
     async def _save_snapshot(
