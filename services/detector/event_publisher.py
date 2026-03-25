@@ -22,7 +22,7 @@ log = structlog.get_logger()
 class EventPublisher:
     """Publishes detection events to Redis Streams and stores media in MinIO."""
 
-    DEBOUNCE_SECONDS = 30.0  # Max 1 event per camera every 30 seconds
+    DEBOUNCE_SECONDS = 10.0  # Max 1 event per tracked object every 10 seconds
 
     def __init__(
         self,
