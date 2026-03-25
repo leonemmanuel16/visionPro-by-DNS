@@ -95,6 +95,12 @@ class EventPublisher:
 
         metadata["tracker_id"] = detection.tracker_id
 
+        # Store frame dimensions so heatmap can map bbox correctly
+        # (bbox is in pixel coords of the source frame resolution)
+        if frame is not None:
+            metadata["frame_width"] = int(frame.shape[1])
+            metadata["frame_height"] = int(frame.shape[0])
+
         # Insert event into database
         async with self.db.acquire() as conn:
             await conn.execute(

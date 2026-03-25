@@ -40,8 +40,8 @@ const TIME_RANGES = [
   { id: "30d", label: "Último mes", hours: 720 },
 ];
 
-const GRID_COLS = 20;
-const GRID_ROWS = 15;
+const GRID_COLS = 32;
+const GRID_ROWS = 24;
 
 function intensityToColor(intensity: number): string {
   if (intensity < 5) return "transparent";
@@ -160,6 +160,48 @@ export default function HeatmapPage() {
       grid.push(new Array(GRID_COLS).fill(0));
     }
 
+    // Auto-detect frame dimensions from event metadata or bbox values
+    // The detector stores frame_width/frame_height in metadata
+    let frameW = 0;
+    let frameH = 0;
+
+    // First, try to get dimensions from metadata of any event
+    for (const evt of evts) {
+      if (evt.metadata?.frame_width && evt.metadata?.frame_height) {
+        frameW = evt.metadata.frame_width;
+        frameH = evt.metadata.frame_height;
+        break;
+      }
+    }
+
+    // Fallback: auto-detect from max bbox coordinates
+    if (frameW === 0 || frameH === 0) {
+      let maxX = 0, maxY = 0;
+      for (const evt of evts) {
+        if (!evt.bbox) continue;
+        if (evt.bbox.x2 > maxX) maxX = evt.bbox.x2;
+        if (evt.bbox.y2 > maxY) maxY = evt.bbox.y2;
+      }
+      // Round up to common resolutions
+      if (maxX <= 1 && maxY <= 1) {
+        frameW = 1; frameH = 1; // Already normalized
+      } else if (maxX <= 640) {
+        frameW = 640; frameH = 480;
+      } else if (maxX <= 704) {
+        frameW = 704; frameH = 576;
+      } else if (maxX <= 1280) {
+        frameW = 1280; frameH = 720;
+      } else if (maxX <= 1920) {
+        frameW = 1920; frameH = 1080;
+      } else if (maxX <= 2048) {
+        frameW = 2048; frameH = 1536;
+      } else if (maxX <= 2560) {
+        frameW = 2560; frameH = 1440;
+      } else {
+        frameW = 3840; frameH = 2160;
+      }
+    }
+
     // Accumulate detections by grid position
     let maxCount = 0;
     for (const evt of evts) {
@@ -170,22 +212,26 @@ export default function HeatmapPage() {
       const cx = (x1 + x2) / 2;
       const cy = (y1 + y2) / 2;
 
-      // Map to grid cell (bbox coords are typically 0-1920 or 0-1 normalized)
-      // Try to detect if normalized (0-1) or pixel coords
-      const isNormalized = cx <= 1 && cy <= 1;
-      const gx = Math.floor((isNormalized ? cx : cx / 1920) * GRID_COLS);
-      const gy = Math.floor((isNormalized ? cy : cy / 1080) * GRID_ROWS);
+      // Normalize to 0-1 using detected frame dimensions
+      const nx = frameW <= 1 ? cx : cx / frameW;
+      const ny = frameH <= 1 ? cy : cy / frameH;
+
+      // Map to grid cell
+      const gx = Math.min(Math.floor(nx * GRID_COLS), GRID_COLS - 1);
+      const gy = Math.min(Math.floor(ny * GRID_ROWS), GRID_ROWS - 1);
 
       if (gx >= 0 && gx < GRID_COLS && gy >= 0 && gy < GRID_ROWS) {
         grid[gy][gx]++;
 
-        // Also add heat to surrounding cells (gaussian-like spread)
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const ny = gy + dy;
-            const nx = gx + dx;
-            if (ny >= 0 && ny < GRID_ROWS && nx >= 0 && nx < GRID_COLS && (dx !== 0 || dy !== 0)) {
-              grid[ny][nx] += 0.5;
+        // Gaussian-like spread to surrounding cells (2-cell radius for smoother look)
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const ny2 = gy + dy;
+            const nx2 = gx + dx;
+            if (ny2 >= 0 && ny2 < GRID_ROWS && nx2 >= 0 && nx2 < GRID_COLS) {
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              grid[ny2][nx2] += Math.max(0, 1 - dist * 0.35);
             }
           }
         }
@@ -359,7 +405,7 @@ export default function HeatmapPage() {
                               key={`${y}-${x}`}
                               style={{
                                 backgroundColor: intensityToColor(val),
-                                filter: "blur(3px)",
+                                filter: "blur(6px)",
                               }}
                               title={`Zona (${x},${y}): ${Math.round(val)}% actividad`}
                             />
