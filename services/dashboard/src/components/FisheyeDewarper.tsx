@@ -36,25 +36,28 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
   useEffect(() => {
     if (viewMode === "360") return; // No dewarping needed for 360° view
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout>;
+
     const checkVideo = () => {
       if (cancelled) return;
       const el = videoRef.current;
       if (el) {
         // Video element is mounted — store in state
         setVideoElement(el);
-        // Also wait for actual video data
+        // Also wait for actual video data to start WebGL rendering
         if (el.readyState < 2) {
           el.addEventListener("loadeddata", () => {
-            if (!cancelled) setVideoElement(el);
+            if (!cancelled) setVideoElement(prev => prev === el ? el : el);
           }, { once: true });
         }
       } else {
-        requestAnimationFrame(checkVideo);
+        // Keep polling until the video element is available
+        pollTimer = setTimeout(checkVideo, 50);
       }
     };
     // Small delay to let VideoPlayer mount
-    setTimeout(checkVideo, 100);
-    return () => { cancelled = true; };
+    pollTimer = setTimeout(checkVideo, 100);
+    return () => { cancelled = true; clearTimeout(pollTimer); };
   }, [viewMode]);
 
   if (!isOnline) {

@@ -62,6 +62,7 @@ void main() {
   vec3 ray = normalize(vec3(x * u_aspect, y, f));
 
   // Rotate ray: first pitch around X axis (tilt from Z toward XY plane)
+  // For ceiling mount: pitch=0 looks straight down, pitch=PI/2 looks at walls
   float cp = cos(u_pitch), sp = sin(u_pitch);
   vec3 pitched = vec3(
     ray.x,
@@ -240,7 +241,7 @@ function DewarperCanvas({
 
       // Resize canvas to match display size
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio, 2);
+      const dpr = Math.min(window.devicePixelRatio, 1.5);
       const w = Math.round(rect.width * dpr);
       const h = Math.round(rect.height * dpr);
       if (canvas.width !== w || canvas.height !== h) {

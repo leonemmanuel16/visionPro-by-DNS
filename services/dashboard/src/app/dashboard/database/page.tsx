@@ -371,6 +371,15 @@ export default function DatabasePage() {
 
   return (
     <>
+      {/* Global hidden file input — outside modals so ref is always available */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        style={{ display: "none" }}
+        onChange={handleFileSelected}
+      />
       <Header title="Base de Datos - Reconocimiento Facial" />
       <div className="p-6">
         {/* Stats */}
@@ -836,16 +845,6 @@ export default function DatabasePage() {
                   {selectedPerson.photoCount} / 3 mínimo
                 </span>
               </div>
-
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                multiple
-                className="hidden"
-                onChange={handleFileSelected}
-              />
 
               {/* Upload Zone */}
               <div

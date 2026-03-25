@@ -107,10 +107,12 @@ export default function HeatmapPage() {
     const cam = cameras.find((c) => c.id === selectedCamera);
     if (!cam) return;
 
-    // Use go2rtc snapshot API for live frame
+    // Use go2rtc snapshot API for live frame — try h264 stream first, then base
     const camId = selectedCamera.replace(/-/g, "").slice(0, 12);
     const go2rtcUrl = getGo2rtcUrl();
-    setSnapshotUrl(`${go2rtcUrl}/api/frame.jpeg?src=cam_${camId}`);
+    // Add timestamp to prevent caching
+    const ts = Date.now();
+    setSnapshotUrl(`${go2rtcUrl}/api/frame.jpeg?src=cam_${camId}_h264&t=${ts}`);
   };
 
   const loadEvents = async () => {
@@ -318,7 +320,14 @@ export default function HeatmapPage() {
                         alt="Camera snapshot"
                         className="absolute inset-0 w-full h-full object-cover opacity-60"
                         onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
+                          const img = e.target as HTMLImageElement;
+                          // Fallback: try base stream (without _h264)
+                          if (img.src.includes("_h264")) {
+                            const camId = selectedCamera.replace(/-/g, "").slice(0, 12);
+                            img.src = `${getGo2rtcUrl()}/api/frame.jpeg?src=cam_${camId}&t=${Date.now()}`;
+                          } else {
+                            img.style.display = "none";
+                          }
                         }}
                       />
                     )}
