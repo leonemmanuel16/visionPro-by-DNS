@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
-import { Circle, Grid2X2, Maximize2, Move, ScanLine } from "lucide-react";
+import { useRef, useState, useEffect, useCallback } from "react";
+import { Circle, Grid2X2, Maximize2, Move } from "lucide-react";
 import { VideoPlayer } from "./VideoPlayer";
 import { WebGLDewarper } from "./WebGLDewarper";
 
@@ -28,18 +28,33 @@ type ViewMode = "360" | "quad" | "panoramic" | "interactive";
 export function FisheyeDewarper({ cameraName, isOnline, className = "" }: FisheyeDewarperProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("quad");
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [videoReady, setVideoReady] = useState(false);
+  // Store video element in state so re-renders happen when it becomes available
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
 
-  // Monitor when video has data
+  // Poll for video readiness — videoRef.current is set by forwardRef,
+  // but we need state to trigger a re-render when the element is available
   useEffect(() => {
+    if (viewMode === "360") return; // No dewarping needed for 360° view
+    let cancelled = false;
     const checkVideo = () => {
-      if (videoRef.current && videoRef.current.readyState >= 2) {
-        setVideoReady(true);
+      if (cancelled) return;
+      const el = videoRef.current;
+      if (el) {
+        // Video element is mounted — store in state
+        setVideoElement(el);
+        // Also wait for actual video data
+        if (el.readyState < 2) {
+          el.addEventListener("loadeddata", () => {
+            if (!cancelled) setVideoElement(el);
+          }, { once: true });
+        }
       } else {
         requestAnimationFrame(checkVideo);
       }
     };
-    checkVideo();
+    // Small delay to let VideoPlayer mount
+    setTimeout(checkVideo, 100);
+    return () => { cancelled = true; };
   }, [viewMode]);
 
   if (!isOnline) {
@@ -112,7 +127,7 @@ export function FisheyeDewarper({ cameraName, isOnline, className = "" }: Fishey
           </div>
 
           <WebGLDewarper
-            videoElement={videoRef.current}
+            videoElement={videoElement}
             mode={viewMode === "quad" ? "quad" : viewMode === "panoramic" ? "panoramic" : "interactive"}
           />
         </>

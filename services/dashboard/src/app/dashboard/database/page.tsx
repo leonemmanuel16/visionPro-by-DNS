@@ -299,50 +299,68 @@ export default function DatabasePage() {
     // Trigger the hidden file input
     if (fileInputRef.current) {
       fileInputRef.current.dataset.personId = personId;
+      fileInputRef.current.value = ""; // Reset so same file can be re-selected
       fileInputRef.current.click();
     }
   };
 
-  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    const personId = e.target.dataset.personId;
+  const uploadFiles = async (files: FileList | File[], personId: string) => {
     if (!files || files.length === 0 || !personId) return;
 
     setUploading(true);
     setUploadMsg(null);
 
+    let successCount = 0;
+    let lastError = "";
+
     for (const file of Array.from(files)) {
       try {
-        const formData = new FormData();
-        formData.append("file", file);
+        const fd = new FormData();
+        fd.append("file", file);
 
         const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
         const res = await fetch(`${getApiUrl()}/api/v1/persons/${personId}/photos`, {
           method: "POST",
           headers: token ? { Authorization: `Bearer ${token}` } : {},
-          body: formData,
+          body: fd,
         });
 
         if (res.ok) {
           const data = await res.json();
+          successCount++;
           setPeople((prev) =>
             prev.map((p) =>
               p.id === personId ? { ...p, photoCount: p.photoCount + 1 } : p
             )
           );
-          setUploadMsg(data.message || "Foto subida correctamente");
+          setUploadMsg(data.message || `${successCount} foto(s) subida(s) correctamente`);
         } else {
           const err = await res.json().catch(() => ({ detail: "Error al subir la foto" }));
-          setUploadMsg(err.detail || "Error al subir la foto");
+          lastError = err.detail || "Error al subir la foto";
+          setUploadMsg(lastError);
         }
       } catch {
-        setUploadMsg("Error de conexión al subir la foto");
+        lastError = "Error de conexión al subir la foto";
+        setUploadMsg(lastError);
       }
     }
 
+    if (successCount > 0 && lastError) {
+      setUploadMsg(`${successCount} foto(s) subida(s). Último error: ${lastError}`);
+    } else if (successCount > 0) {
+      setUploadMsg(`${successCount} foto(s) subida(s) y procesada(s) correctamente ✓`);
+    }
+
     setUploading(false);
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    const personId = e.target.dataset?.personId || selectedPerson?.id;
+    if (!files || files.length === 0 || !personId) return;
+    await uploadFiles(files, personId);
     // Reset input
-    e.target.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const stats = {
@@ -838,13 +856,9 @@ export default function DatabasePage() {
                 onDrop={(e) => {
                   e.preventDefault();
                   e.currentTarget.classList.remove("border-blue-500", "bg-blue-50");
-                  if (e.dataTransfer.files.length > 0 && fileInputRef.current) {
-                    fileInputRef.current.dataset.personId = selectedPerson.id;
-                    // Create synthetic event
-                    const dt = new DataTransfer();
-                    Array.from(e.dataTransfer.files).forEach((f) => dt.items.add(f));
-                    fileInputRef.current.files = dt.files;
-                    fileInputRef.current.dispatchEvent(new Event("change", { bubbles: true }));
+                  if (e.dataTransfer.files.length > 0) {
+                    // Directly process dropped files — no need for synthetic events
+                    uploadFiles(Array.from(e.dataTransfer.files), selectedPerson.id);
                   }
                 }}
               >

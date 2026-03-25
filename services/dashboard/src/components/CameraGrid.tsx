@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { VideoPlayer } from "./VideoPlayer";
 import { DetectionOverlay, DEMO_DETECTIONS } from "./DetectionOverlay";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,19 @@ interface CameraGridProps {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
+  // Read stream quality preference from settings
+  const [preferSubStream, setPreferSubStream] = useState(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("stream_settings");
+      if (saved) {
+        const settings = JSON.parse(saved);
+        // Use sub-stream for "low" or "medium" quality
+        setPreferSubStream(settings.quality === "low" || settings.quality === "medium");
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   // Filter out legacy cam-xxxxx IDs that aren't valid UUIDs or cam-timestamp IDs
   const validCameras = useMemo(() => {
     return cameras.filter((c) => {
@@ -57,6 +70,7 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
                     cameraName={streamName}
                     isOnline={camera.is_online}
                     className="aspect-video"
+                    preferSubStream={preferSubStream}
                   />
                   {camera.is_online && detections.length > 0 && (
                     <DetectionOverlay detections={detections} />
