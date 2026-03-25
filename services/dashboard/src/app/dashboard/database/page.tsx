@@ -136,8 +136,8 @@ const DEMO_UNKNOWN_FACES: UnknownFace[] = [
 ];
 
 export default function DatabasePage() {
-  const [people, setPeople] = useState<Person[]>(DEMO_PEOPLE);
-  const [unknownFaces, setUnknownFaces] = useState<UnknownFace[]>(DEMO_UNKNOWN_FACES);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [unknownFaces, setUnknownFaces] = useState<UnknownFace[]>([]);
   const [activeTab, setActiveTab] = useState<"known" | "unknown">("known");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterRole, setFilterRole] = useState("");
@@ -191,7 +191,7 @@ export default function DatabasePage() {
   // Load persons from API on mount
   useEffect(() => {
     api.get<any[]>("/persons").then((data) => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         setPeople(data.map((p: any) => ({
           id: p.id,
           name: p.name,
@@ -205,10 +205,10 @@ export default function DatabasePage() {
           created_at: p.created_at?.split("T")[0] || "",
         })));
       }
-    }).catch(() => { /* keep demo data */ });
+    }).catch(() => { setPeople([]); });
 
     api.get<any[]>("/unknown-faces").then((data) => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         const colors = ["bg-rose-200", "bg-amber-200", "bg-sky-200", "bg-emerald-200", "bg-violet-200", "bg-pink-200", "bg-teal-200"];
         setUnknownFaces(data.map((f: any, i: number) => ({
           id: f.id,
@@ -221,7 +221,7 @@ export default function DatabasePage() {
           daysRemaining: f.days_remaining || 30,
         })));
       }
-    }).catch(() => { /* keep demo data */ });
+    }).catch(() => { setUnknownFaces([]); });
   }, []);
 
   const filteredPeople = people.filter((p) => {

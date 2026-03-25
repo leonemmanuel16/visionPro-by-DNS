@@ -46,7 +46,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_PASSWORD}
       - MODEL_NAME=${MODEL_NAME:-yolov10s}
       - DETECTION_FPS=${DETECTION_FPS:-5}
-      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.80}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.55}
       - GO2RTC_URL=http://localhost:1984
       - DEVICE=cpu
     depends_on:
