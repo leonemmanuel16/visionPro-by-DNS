@@ -121,7 +121,9 @@ export default function HeatmapPage() {
       const range = TIME_RANGES.find((t) => t.id === timeRange);
       const since = new Date(Date.now() - (range?.hours || 24) * 3600000).toISOString();
 
-      let url = `/events?camera_id=${selectedCamera}&per_page=500&since=${since}`;
+      // API uses "from" parameter (not "since"), and max per_page is 200
+      // Fetch multiple pages to get up to 1000 events for heatmap accuracy
+      let url = `/events?camera_id=${selectedCamera}&per_page=200&from=${encodeURIComponent(since)}`;
       if (selectedPerson !== "all") {
         // Filter by person name in metadata — done client-side after fetch
       }
