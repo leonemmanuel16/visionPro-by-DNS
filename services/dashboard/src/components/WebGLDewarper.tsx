@@ -351,17 +351,17 @@ export function WebGLDewarper({
     return (
       <div className={`grid grid-cols-2 gap-2 ${className}`}>
         {[
-          { yaw: 0, pitch: 70, label: "Vista 1 — Norte" },
-          { yaw: 90, pitch: 70, label: "Vista 2 — Este" },
-          { yaw: 180, pitch: 70, label: "Vista 3 — Sur" },
-          { yaw: 270, pitch: 70, label: "Vista 4 — Oeste" },
+          { yaw: 0, pitch: 60, label: "Vista 1 — Norte" },
+          { yaw: 90, pitch: 60, label: "Vista 2 — Este" },
+          { yaw: 180, pitch: 60, label: "Vista 3 — Sur" },
+          { yaw: 270, pitch: 60, label: "Vista 4 — Oeste" },
         ].map((q, i) => (
           <div key={i} className="relative rounded-lg overflow-hidden border border-gray-200">
             <DewarperCanvas
               videoElement={videoElement}
               yaw={q.yaw}
               pitch={q.pitch}
-              fov={90}
+              fov={60}
               centerX={centerX}
               centerY={centerY}
               radius={radius}
