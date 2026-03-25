@@ -47,8 +47,9 @@ uniform float u_pitch;    // radians — tilt (0=down, PI/2=horizon)
 uniform float u_fov;      // radians — output field of view
 uniform float u_centerX;  // fisheye center in texture (0-1)
 uniform float u_centerY;  // fisheye center in texture (0-1)
-uniform float u_radius;   // fisheye circle radius in texture coords
+uniform float u_radius;   // fisheye circle radius in Y texture coords (height-normalized)
 uniform float u_aspect;   // output width/height ratio
+uniform float u_srcAspect; // source video width/height (e.g. 1.778 for 16:9)
 
 const float PI = 3.14159265359;
 
@@ -89,7 +90,10 @@ void main() {
   float r = (theta / (PI * 0.5)) * u_radius;
 
   // Map to texture coordinates
-  float u = u_centerX + r * cos(phi);
+  // The fisheye circle is circular in pixel space, but the source image is
+  // typically 16:9, so in texture coords X needs scaling by 1/srcAspect.
+  // u_radius is the circle radius normalized by image HEIGHT.
+  float u = u_centerX + r * cos(phi) / u_srcAspect;
   float v = u_centerY + r * sin(phi);
 
   // Bounds check
@@ -258,6 +262,10 @@ function DewarperCanvas({
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoElement);
 
       // Set uniforms
+      // Source video aspect ratio — fisheye circle is circular in pixels,
+      // but texture coords are normalized, so X needs compensation
+      const srcAspect = videoElement.videoWidth / (videoElement.videoHeight || 1) || 16 / 9;
+
       gl.uniform1i(gl.getUniformLocation(program, "u_video"), 0);
       gl.uniform1f(gl.getUniformLocation(program, "u_yaw"), currentYaw * Math.PI / 180);
       gl.uniform1f(gl.getUniformLocation(program, "u_pitch"), currentPitch * Math.PI / 180);
@@ -266,6 +274,7 @@ function DewarperCanvas({
       gl.uniform1f(gl.getUniformLocation(program, "u_centerY"), centerY);
       gl.uniform1f(gl.getUniformLocation(program, "u_radius"), radius);
       gl.uniform1f(gl.getUniformLocation(program, "u_aspect"), w / h);
+      gl.uniform1f(gl.getUniformLocation(program, "u_srcAspect"), srcAspect);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
