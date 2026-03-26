@@ -387,18 +387,31 @@ export function WebGLDewarper({
   }
 
   if (mode === "panoramic") {
+    // Panoramic: 4 strips side by side covering 360° (each 90° wide)
+    // pitch=55 + fov_vertical~35 = 90° — right at boundary, no black
+    const strips = [
+      { yaw: 0, label: "N" },
+      { yaw: 90, label: "E" },
+      { yaw: 180, label: "S" },
+      { yaw: 270, label: "O" },
+    ];
     return (
       <div className={`relative rounded-lg overflow-hidden border border-gray-200 ${className}`}>
-        <DewarperCanvas
-          videoElement={videoElement}
-          yaw={0}
-          pitch={60}
-          fov={160}
-          centerX={centerX}
-          centerY={centerY}
-          radius={radius}
-          className="w-full aspect-[2/1] bg-gray-900"
-        />
+        <div className="flex">
+          {strips.map((s, i) => (
+            <DewarperCanvas
+              key={i}
+              videoElement={videoElement}
+              yaw={s.yaw}
+              pitch={55}
+              fov={70}
+              centerX={centerX}
+              centerY={centerY}
+              radius={radius}
+              className="flex-1 aspect-[1/1] bg-gray-900"
+            />
+          ))}
+        </div>
         <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded">
           Panorámica 360°
         </div>
