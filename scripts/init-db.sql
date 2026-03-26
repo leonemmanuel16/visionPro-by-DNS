@@ -137,15 +137,5 @@ CREATE INDEX idx_unknown_faces_expires ON unknown_faces(expires_at);
 INSERT INTO users (username, email, password_hash, role) VALUES
 ('admin', 'admin@dnsit.com.mx', '$2b$12$gtGMyVBZlzjcmgxzRt.IreZJikrn8HG3c0Vomwu/C7ZI3ziDXDWoe', 'admin');
 
--- Default cameras (with RTSP URLs pre-configured for Hikvision)
-INSERT INTO cameras (name, ip_address, onvif_port, username, password_encrypted, manufacturer, camera_type,
-  rtsp_main_stream, rtsp_sub_stream, is_online, is_enabled, location) VALUES
-('Cámara 1', '192.168.8.26', 80, 'dns', 'admin12345', 'Hikvision', 'domo',
-  'rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/101',
-  'rtsp://dns:admin12345@192.168.8.26:554/Streaming/Channels/102',
-  true, true, 'Oficina DNS'),
-('Cámara 2 (Fisheye)', '192.168.8.64', 80, 'dns', 'admin12345', 'Hikvision', 'fisheye',
-  'rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/101',
-  'rtsp://dns:admin12345@192.168.8.64:554/Streaming/Channels/102',
-  true, true, 'Oficina DNS')
-ON CONFLICT (ip_address) DO NOTHING;
+-- Cameras are added through the dashboard UI or ONVIF auto-discovery.
+-- No default cameras are pre-configured.
