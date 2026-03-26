@@ -82,7 +82,7 @@ const ROLE_INFO = {
 export default function SettingsPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [users, setUsers] = useState<UserInfo[]>([]);
-  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "email" | "trash" | "language" | "system">("streaming");
+  const [activeTab, setActiveTab] = useState<"streaming" | "users" | "email" | "network" | "trash" | "language" | "system">("streaming");
   const [message, setMessage] = useState({ text: "", type: "" });
 
   // Streaming settings
@@ -160,6 +160,30 @@ export default function SettingsPage() {
   // Timezone
   const [timezone, setTimezone] = useState("America/Monterrey");
 
+  // DDNS / Network
+  const [ddnsConfig, setDdnsConfig] = useState({
+    enabled: false,
+    provider: "noip" as string,
+    hostname: "",
+    username: "",
+    password: "",
+    token: "",
+    updateInterval: 300,
+    lastUpdate: "",
+    lastIp: "",
+  });
+  const [ddnsStatus, setDdnsStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [ddnsMessage, setDdnsMessage] = useState("");
+
+  const DDNS_PROVIDERS = [
+    { id: "noip", label: "No-IP", url: "https://www.noip.com", authType: "userpass" as const },
+    { id: "duckdns", label: "DuckDNS", url: "https://www.duckdns.org", authType: "token" as const },
+    { id: "dynu", label: "Dynu", url: "https://www.dynu.com", authType: "userpass" as const },
+    { id: "cloudflare", label: "Cloudflare DNS", url: "https://cloudflare.com", authType: "token" as const },
+    { id: "freedns", label: "FreeDNS", url: "https://freedns.afraid.org", authType: "token" as const },
+    { id: "custom", label: "URL personalizada", url: "", authType: "token" as const },
+  ];
+
   const LANGUAGES = [
     { code: "es", label: "Español", flag: "🇲🇽", desc: "Español (México)" },
     { code: "en", label: "English", flag: "🇺🇸", desc: "English (US)" },
@@ -192,6 +216,8 @@ export default function SettingsPage() {
     if (savedTz) setTimezone(savedTz);
     const savedSmtp = typeof window !== "undefined" ? localStorage.getItem("smtp_config") : null;
     if (savedSmtp) setSmtpConfig(JSON.parse(savedSmtp));
+    const savedDdns = typeof window !== "undefined" ? localStorage.getItem("ddns_config") : null;
+    if (savedDdns) setDdnsConfig(JSON.parse(savedDdns));
     loadTrash();
   }, []);
 
@@ -347,6 +373,7 @@ export default function SettingsPage() {
     { id: "streaming" as const, label: "Streaming", icon: Monitor },
     { id: "users" as const, label: "Usuarios", icon: Users },
     { id: "email" as const, label: "Email", icon: Mail },
+    { id: "network" as const, label: "Red / DDNS", icon: Wifi },
     { id: "trash" as const, label: `Papelera${trashItems.length ? ` (${trashItems.length})` : ""}`, icon: Trash2 },
     { id: "language" as const, label: "Idioma", icon: Globe },
     { id: "system" as const, label: "Sistema", icon: Info },
@@ -1082,6 +1109,238 @@ export default function SettingsPage() {
                   <span className="text-gray-500">Unidades</span>
                   <span className="font-medium">{language === "en" ? "Imperial" : "Métrico"}</span>
                 </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* NETWORK / DDNS TAB */}
+        {activeTab === "network" && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Globe className="h-5 w-5" />
+                  DNS Dinámico (DDNS)
+                </CardTitle>
+                <p className="text-sm text-gray-500">
+                  Configura un dominio DDNS para acceder al sistema remotamente sin IP fija.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Enable toggle */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="text-sm font-medium">Habilitar DDNS</p>
+                    <p className="text-xs text-gray-500">Actualiza automáticamente tu IP pública con el proveedor DDNS</p>
+                  </div>
+                  <button
+                    onClick={() => setDdnsConfig(prev => ({ ...prev, enabled: !prev.enabled }))}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${
+                      ddnsConfig.enabled ? "bg-blue-600" : "bg-gray-300"
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      ddnsConfig.enabled ? "translate-x-5" : ""
+                    }`} />
+                  </button>
+                </div>
+
+                {ddnsConfig.enabled && (
+                  <>
+                    {/* Provider */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Proveedor DDNS</label>
+                      <select
+                        value={ddnsConfig.provider}
+                        onChange={(e) => setDdnsConfig(prev => ({ ...prev, provider: e.target.value }))}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      >
+                        {DDNS_PROVIDERS.map(p => (
+                          <option key={p.id} value={p.id}>{p.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Hostname */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Hostname / Dominio</label>
+                      <Input
+                        value={ddnsConfig.hostname}
+                        onChange={(e) => setDdnsConfig(prev => ({ ...prev, hostname: e.target.value }))}
+                        placeholder={
+                          ddnsConfig.provider === "duckdns" ? "miservidor.duckdns.org" :
+                          ddnsConfig.provider === "noip" ? "miservidor.ddns.net" :
+                          ddnsConfig.provider === "cloudflare" ? "vision.miempresa.com" :
+                          "miservidor.ddns.net"
+                        }
+                      />
+                      {ddnsConfig.provider !== "custom" && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          Regístrate gratis en{" "}
+                          <a
+                            href={DDNS_PROVIDERS.find(p => p.id === ddnsConfig.provider)?.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline"
+                          >
+                            {DDNS_PROVIDERS.find(p => p.id === ddnsConfig.provider)?.label}
+                          </a>
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Auth: user/pass or token depending on provider */}
+                    {DDNS_PROVIDERS.find(p => p.id === ddnsConfig.provider)?.authType === "userpass" ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Usuario</label>
+                          <Input
+                            value={ddnsConfig.username}
+                            onChange={(e) => setDdnsConfig(prev => ({ ...prev, username: e.target.value }))}
+                            placeholder="Usuario DDNS"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+                          <Input
+                            type="password"
+                            value={ddnsConfig.password}
+                            onChange={(e) => setDdnsConfig(prev => ({ ...prev, password: e.target.value }))}
+                            placeholder="Contraseña DDNS"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          {ddnsConfig.provider === "custom" ? "URL de actualización" : "Token / API Key"}
+                        </label>
+                        <Input
+                          value={ddnsConfig.token}
+                          onChange={(e) => setDdnsConfig(prev => ({ ...prev, token: e.target.value }))}
+                          placeholder={
+                            ddnsConfig.provider === "custom"
+                              ? "https://mi-ddns.com/update?ip={IP}&host={HOST}"
+                              : "Tu token o API key"
+                          }
+                        />
+                        {ddnsConfig.provider === "custom" && (
+                          <p className="text-xs text-gray-400 mt-1">
+                            Usa {"{IP}"} para la IP pública y {"{HOST}"} para el hostname
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Update interval */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Intervalo de actualización (segundos)
+                      </label>
+                      <Input
+                        type="number"
+                        value={ddnsConfig.updateInterval}
+                        onChange={(e) => setDdnsConfig(prev => ({ ...prev, updateInterval: parseInt(e.target.value) || 300 }))}
+                        min={60}
+                        max={3600}
+                      />
+                      <p className="text-xs text-gray-400 mt-1">
+                        Cada cuánto se verifica si cambió la IP pública (mínimo 60s)
+                      </p>
+                    </div>
+
+                    {/* Status info */}
+                    {ddnsConfig.lastIp && (
+                      <div className="p-3 bg-blue-50 rounded-lg text-sm space-y-1">
+                        <p><span className="font-medium">Última IP:</span> {ddnsConfig.lastIp}</p>
+                        <p><span className="font-medium">Última actualización:</span> {ddnsConfig.lastUpdate}</p>
+                      </div>
+                    )}
+
+                    {/* DDNS status message */}
+                    {ddnsMessage && (
+                      <div className={`p-3 rounded-lg text-sm ${
+                        ddnsStatus === "ok" ? "bg-green-50 text-green-700" :
+                        ddnsStatus === "error" ? "bg-red-50 text-red-700" :
+                        "bg-yellow-50 text-yellow-700"
+                      }`}>
+                        {ddnsMessage}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    onClick={() => {
+                      localStorage.setItem("ddns_config", JSON.stringify(ddnsConfig));
+                      // Also save to API for the DDNS updater service
+                      api.post("/system/ddns", ddnsConfig).catch(() => {});
+                      showMsg("Configuración DDNS guardada", "success");
+                    }}
+                  >
+                    Guardar Configuración
+                  </Button>
+                  {ddnsConfig.enabled && ddnsConfig.hostname && (
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        setDdnsStatus("testing");
+                        setDdnsMessage("Probando conexión DDNS...");
+                        try {
+                          const res = await api.post<any>("/system/ddns/test", ddnsConfig);
+                          setDdnsStatus("ok");
+                          setDdnsMessage(`DDNS actualizado. IP pública: ${res.ip || "detectada"}`);
+                          setDdnsConfig(prev => ({
+                            ...prev,
+                            lastIp: res.ip || "",
+                            lastUpdate: new Date().toLocaleString(),
+                          }));
+                        } catch (e: any) {
+                          setDdnsStatus("error");
+                          setDdnsMessage(`Error: ${e.message || "No se pudo actualizar el DDNS"}`);
+                        }
+                      }}
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-1 ${ddnsStatus === "testing" ? "animate-spin" : ""}`} />
+                      Probar DDNS
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Port forwarding guide */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Puertos necesarios</CardTitle>
+                <p className="text-sm text-gray-500">
+                  Para acceso remoto, abre estos puertos en tu router/firewall:
+                </p>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2 text-sm">
+                  {[
+                    { port: "3000", service: "Dashboard", desc: "Interfaz web principal" },
+                    { port: "8000", service: "API", desc: "API REST para la app" },
+                    { port: "1984", service: "go2rtc", desc: "Streaming de video (WebRTC)" },
+                    { port: "8555", service: "WebRTC UDP", desc: "Video en tiempo real (UDP)" },
+                  ].map((p) => (
+                    <div key={p.port} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                      <div className="flex items-center gap-3">
+                        <code className="bg-gray-200 px-2 py-0.5 rounded text-xs font-mono">{p.port}</code>
+                        <span className="font-medium">{p.service}</span>
+                      </div>
+                      <span className="text-gray-500 text-xs">{p.desc}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-3">
+                  Si usas DDNS, configura port forwarding en tu router para redirigir estos puertos
+                  a la IP local del servidor (ej: 192.168.x.x).
+                </p>
               </CardContent>
             </Card>
           </div>

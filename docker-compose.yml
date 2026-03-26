@@ -75,6 +75,9 @@ services:
       - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
       - SMTP_FROM_NAME=${SMTP_FROM_NAME:-DNS Vision Pro}
       - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - DDNS_CONFIG_PATH=/config/ddns.json
+    volumes:
+      - ./config:/config
     depends_on:
       - postgres
       - redis
