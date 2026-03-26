@@ -299,8 +299,13 @@ function DewarperCanvas({
     lastMouseRef.current = { x: e.clientX, y: e.clientY };
 
     setCurrentYaw((prev) => prev + dx * 0.3);
-    setCurrentPitch((prev) => Math.max(-89, Math.min(89, prev + dy * 0.3)));
-  }, [interactive]);
+    // Clamp pitch so that pitch + fov/2 stays ≤ 90° (fisheye hemisphere limit)
+    setCurrentPitch((prev) => {
+      const newPitch = prev + dy * 0.3;
+      const maxPitch = 90 - currentFov / 2;
+      return Math.max(5, Math.min(maxPitch, newPitch));
+    });
+  }, [interactive, currentFov]);
 
   const handleMouseUp = useCallback(() => {
     draggingRef.current = false;
@@ -309,8 +314,13 @@ function DewarperCanvas({
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (!interactive) return;
     e.preventDefault();
-    setCurrentFov((prev) => Math.max(30, Math.min(120, prev + e.deltaY * 0.1)));
-  }, [interactive]);
+    setCurrentFov((prev) => {
+      const newFov = prev + e.deltaY * 0.1;
+      // Clamp FOV: min 20° (zoom in), max so pitch+fov/2 ≤ 90°
+      const maxFov = Math.min(90, (90 - currentPitch) * 2);
+      return Math.max(20, Math.min(maxFov, newFov));
+    });
+  }, [interactive, currentPitch]);
 
   return (
     <canvas
@@ -332,8 +342,8 @@ export function WebGLDewarper({
   videoElement,
   mode,
   initialYaw = 0,
-  initialPitch = 70,
-  initialFov = 90,
+  initialPitch = 55,
+  initialFov = 70,
   centerX = 0.50,
   centerY = 0.50,
   radius = 0.48,  // Hikvision ceiling fisheye: circle fills ~96% of frame height
