@@ -127,19 +127,30 @@ class DetectorService:
         """Start detection tasks for all enabled cameras."""
         async with self.db_pool.acquire() as conn:
             cameras = await conn.fetch(
-                "SELECT id, name, rtsp_sub_stream, rtsp_main_stream FROM cameras WHERE is_enabled = true AND is_online = true"
+                "SELECT id, name, rtsp_sub_stream, rtsp_main_stream, camera_type FROM cameras WHERE is_enabled = true AND is_online = true"
             )
 
         for cam in cameras:
             cam_id = str(cam["id"])
             if cam_id not in self.camera_tasks:
-                # Use main stream for better face recognition (GPU can handle 1080p)
-                # Falls back to sub-stream if main not available
                 cam_id_short = cam_id.replace("-", "")[:12]
+                cam_name_lower = (cam["name"] or "").lower()
+                cam_type = (cam.get("camera_type") or "").lower()
+                is_fisheye = "fisheye" in cam_name_lower or "fish" in cam_name_lower or cam_type == "fisheye"
+
                 if self.go2rtc_url:
-                    stream_url = f"{self.go2rtc_url.replace('http://', 'rtsp://').replace(':1984', ':8554')}/cam_{cam_id_short}"
+                    rtsp_base = self.go2rtc_url.replace("http://", "rtsp://").replace(":1984", ":8554")
+                    if is_fisheye:
+                        # Fisheye: use sub-stream (less distortion, YOLO works better)
+                        stream_url = f"{rtsp_base}/cam_{cam_id_short}_sub"
+                    else:
+                        # Normal cameras: use main stream (1080p) for better face recognition
+                        stream_url = f"{rtsp_base}/cam_{cam_id_short}"
                 else:
-                    stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
+                    if is_fisheye:
+                        stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
+                    else:
+                        stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
                 if stream_url:
                     task = asyncio.create_task(
                         self._detection_loop(
@@ -147,7 +158,8 @@ class DetectorService:
                         )
                     )
                     self.camera_tasks[cam_id] = task
-                    log.info("detector.camera_started", camera_id=cam_id, name=cam["name"])
+                    stream_type = "sub" if is_fisheye else "main"
+                    log.info("detector.camera_started", camera_id=cam_id, name=cam["name"], stream=stream_type)
 
     async def _detection_loop(
         self, camera_id, camera_name, stream_url, detector, publisher, zone_manager, face_recognizer
