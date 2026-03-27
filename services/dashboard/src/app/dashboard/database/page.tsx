@@ -39,68 +39,7 @@ interface Person {
   created_at: string;
 }
 
-const DEMO_PEOPLE: Person[] = [
-  {
-    id: "p-001",
-    name: "Juan Pérez",
-    role: "Empleado",
-    department: "Sistemas",
-    photos: [],
-    photoCount: 3,
-    lastSeen: "Hace 2 horas",
-    lastCamera: "Entrada Principal",
-    status: "active",
-    created_at: "2025-01-15",
-  },
-  {
-    id: "p-002",
-    name: "María García",
-    role: "Empleado",
-    department: "Administración",
-    photos: [],
-    photoCount: 2,
-    lastSeen: "Hace 30 min",
-    lastCamera: "Pasillo Piso 2",
-    status: "active",
-    created_at: "2025-01-20",
-  },
-  {
-    id: "p-003",
-    name: "Carlos López",
-    role: "Visitante",
-    department: "Externo",
-    photos: [],
-    photoCount: 1,
-    lastSeen: "Hace 5 días",
-    lastCamera: "Recepción",
-    status: "inactive",
-    created_at: "2025-02-10",
-  },
-  {
-    id: "p-004",
-    name: "Ana Martínez",
-    role: "Guardia",
-    department: "Seguridad",
-    photos: [],
-    photoCount: 4,
-    lastSeen: "Hace 15 min",
-    lastCamera: "Estacionamiento Norte",
-    status: "active",
-    created_at: "2025-01-18",
-  },
-  {
-    id: "p-005",
-    name: "Roberto Díaz",
-    role: "Empleado",
-    department: "Ingeniería",
-    photos: [],
-    photoCount: 2,
-    lastSeen: "Ayer",
-    lastCamera: "Oficina Servidores",
-    status: "active",
-    created_at: "2025-02-01",
-  },
-];
+// No demo data — all persons loaded from API
 
 const ROLES = ["Empleado", "Visitante", "Guardia", "Contratista", "Proveedor", "VIP", "Restringido"];
 const DEPARTMENTS = [
@@ -125,15 +64,7 @@ interface UnknownFace {
   daysRemaining: number;
 }
 
-const DEMO_UNKNOWN_FACES: UnknownFace[] = [
-  { id: "uf-001", thumbnailColor: "bg-rose-200", thumbnailPath: "", firstSeen: "Hoy 08:23", lastSeen: "Hoy 08:45", camera: "Entrada Principal", detectionCount: 5, daysRemaining: 30 },
-  { id: "uf-002", thumbnailColor: "bg-amber-200", thumbnailPath: "", firstSeen: "Hoy 07:15", lastSeen: "Hoy 07:15", camera: "Estacionamiento Norte", detectionCount: 1, daysRemaining: 30 },
-  { id: "uf-003", thumbnailColor: "bg-sky-200", thumbnailPath: "", firstSeen: "Ayer 14:30", lastSeen: "Ayer 16:00", camera: "Recepción", detectionCount: 8, daysRemaining: 29 },
-  { id: "uf-004", thumbnailColor: "bg-emerald-200", thumbnailPath: "", firstSeen: "Hace 3 días", lastSeen: "Hace 2 días", camera: "Pasillo Piso 2", detectionCount: 3, daysRemaining: 27 },
-  { id: "uf-005", thumbnailColor: "bg-violet-200", thumbnailPath: "", firstSeen: "Hace 5 días", lastSeen: "Hace 5 días", camera: "Almacén", detectionCount: 2, daysRemaining: 25 },
-  { id: "uf-006", thumbnailColor: "bg-orange-200", thumbnailPath: "", firstSeen: "Hace 12 días", lastSeen: "Hace 10 días", camera: "Entrada Principal", detectionCount: 15, daysRemaining: 18 },
-  { id: "uf-007", thumbnailColor: "bg-pink-200", thumbnailPath: "", firstSeen: "Hace 25 días", lastSeen: "Hace 20 días", camera: "Recepción", detectionCount: 4, daysRemaining: 5 },
-];
+// No demo data — all unknown faces loaded from API
 
 export default function DatabasePage() {
   const [people, setPeople] = useState<Person[]>([]);
@@ -146,9 +77,12 @@ export default function DatabasePage() {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showIdentifyModal, setShowIdentifyModal] = useState(false);
   const [selectedUnknown, setSelectedUnknown] = useState<UnknownFace | null>(null);
+  const [identifyMode, setIdentifyMode] = useState<"existing" | "new">("existing");
+  const [identifyPersonId, setIdentifyPersonId] = useState("");
   const [identifyName, setIdentifyName] = useState("");
   const [identifyRole, setIdentifyRole] = useState("Visitante");
   const [identifyDept, setIdentifyDept] = useState("Externo");
+  const [identifyError, setIdentifyError] = useState("");
 
   // Form state
   const [formData, setFormData] = useState({
@@ -158,29 +92,71 @@ export default function DatabasePage() {
   });
   const [formError, setFormError] = useState("");
 
-  const handleIdentifyUnknown = () => {
-    if (!identifyName.trim() || !selectedUnknown) return;
-    // Add to known people
-    const newPerson: Person = {
-      id: `p-${Date.now()}`,
-      name: identifyName.trim(),
-      role: identifyRole,
-      department: identifyDept,
-      photos: [],
-      photoCount: 1,
-      lastSeen: selectedUnknown.lastSeen,
-      lastCamera: selectedUnknown.camera,
-      status: "active",
-      created_at: new Date().toISOString().split("T")[0],
-    };
-    setPeople((prev) => [...prev, newPerson]);
-    // Remove from unknown
-    setUnknownFaces((prev) => prev.filter((f) => f.id !== selectedUnknown.id));
-    setShowIdentifyModal(false);
-    setSelectedUnknown(null);
-    setIdentifyName("");
-    setIdentifyRole("Visitante");
-    setIdentifyDept("Externo");
+  const handleIdentifyUnknown = async () => {
+    if (!selectedUnknown) return;
+    setIdentifyError("");
+
+    try {
+      let targetPersonId = "";
+
+      if (identifyMode === "existing") {
+        // Associate to existing person
+        if (!identifyPersonId) {
+          setIdentifyError("Selecciona una persona");
+          return;
+        }
+        targetPersonId = identifyPersonId;
+      } else {
+        // Create new person first
+        if (!identifyName.trim()) {
+          setIdentifyError("El nombre es obligatorio");
+          return;
+        }
+        const result = await api.post<any>("/persons", {
+          name: identifyName.trim(),
+          role: identifyRole,
+          department: identifyDept,
+        });
+        if (!result?.id) {
+          setIdentifyError("Error al crear la persona");
+          return;
+        }
+        targetPersonId = result.id;
+        // Add to local state
+        setPeople((prev) => [...prev, {
+          id: result.id,
+          name: result.name,
+          role: result.role || identifyRole,
+          department: result.department || identifyDept,
+          photos: [],
+          photoCount: 0,
+          status: "active",
+          created_at: new Date().toISOString().split("T")[0],
+        }]);
+      }
+
+      // Associate unknown face to the person via API (moves embedding)
+      await api.post(`/unknown-faces/${selectedUnknown.id}/identify`, {
+        person_id: targetPersonId,
+      });
+
+      // Update photo count in local state
+      setPeople((prev) =>
+        prev.map((p) => p.id === targetPersonId ? { ...p, photoCount: p.photoCount + 1 } : p)
+      );
+
+      // Remove from unknown faces list
+      setUnknownFaces((prev) => prev.filter((f) => f.id !== selectedUnknown.id));
+      setShowIdentifyModal(false);
+      setSelectedUnknown(null);
+      setIdentifyName("");
+      setIdentifyPersonId("");
+      setIdentifyRole("Visitante");
+      setIdentifyDept("Externo");
+      setIdentifyMode("existing");
+    } catch (e: any) {
+      setIdentifyError(e?.message || "Error al identificar el rostro");
+    }
   };
 
   const handleDeleteUnknown = async (id: string) => {
@@ -697,63 +673,129 @@ export default function DatabasePage() {
             <div className="flex items-center justify-between p-5 border-b border-gray-200">
               <h2 className="text-lg font-semibold text-gray-900">Identificar Persona</h2>
               <button
-                onClick={() => { setShowIdentifyModal(false); setSelectedUnknown(null); }}
+                onClick={() => { setShowIdentifyModal(false); setSelectedUnknown(null); setIdentifyError(""); }}
                 className="p-1 rounded-md hover:bg-gray-100 text-gray-500"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="p-5 space-y-4">
-              <div className={`h-32 ${selectedUnknown.thumbnailColor} rounded-lg flex items-center justify-center`}>
-                <HelpCircle className="h-16 w-16 text-white/50" />
+              {/* Face thumbnail */}
+              <div className={`h-32 ${selectedUnknown.thumbnailColor} rounded-lg flex items-center justify-center overflow-hidden`}>
+                {selectedUnknown.thumbnailPath ? (
+                  <img
+                    src={`${getApiUrl()}/api/v1/unknown-faces/${selectedUnknown.id}/thumbnail`}
+                    alt="Rostro"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <HelpCircle className="h-16 w-16 text-white/50" />
+                )}
               </div>
               <div className="text-xs text-gray-500 space-y-1">
                 <p>Detectado {selectedUnknown.detectionCount} veces desde {selectedUnknown.firstSeen}</p>
-                <p>Cámara: {selectedUnknown.camera}</p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Nombre Completo <span className="text-red-500">*</span>
-                </label>
-                <Input
-                  placeholder="Ej: Juan Pérez"
-                  value={identifyName}
-                  onChange={(e) => setIdentifyName(e.target.value)}
-                />
+
+              {identifyError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{identifyError}</div>
+              )}
+
+              {/* Mode selector: existing or new */}
+              <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+                <button
+                  onClick={() => setIdentifyMode("existing")}
+                  className={`flex-1 text-xs font-medium py-2 rounded-md transition-colors ${
+                    identifyMode === "existing" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Persona Existente
+                </button>
+                <button
+                  onClick={() => setIdentifyMode("new")}
+                  className={`flex-1 text-xs font-medium py-2 rounded-md transition-colors ${
+                    identifyMode === "new" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Crear Nueva
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+
+              {identifyMode === "existing" ? (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
-                  <select
-                    value={identifyRole}
-                    onChange={(e) => setIdentifyRole(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                  >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Seleccionar Persona <span className="text-red-500">*</span>
+                  </label>
+                  {people.length > 0 ? (
+                    <select
+                      value={identifyPersonId}
+                      onChange={(e) => setIdentifyPersonId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    >
+                      <option value="">-- Seleccionar --</option>
+                      {people.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} — {p.role} ({p.department}) [{p.photoCount} fotos]
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-sm text-gray-400">No hay personas registradas. Crea una nueva.</p>
+                  )}
+                  <p className="text-xs text-gray-400 mt-1">
+                    El rostro se asociará a esta persona, mejorando el reconocimiento desde más ángulos.
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Departamento</label>
-                  <select
-                    value={identifyDept}
-                    onChange={(e) => setIdentifyDept(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                  >
-                    {DEPARTMENTS.map((d) => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Nombre Completo <span className="text-red-500">*</span>
+                    </label>
+                    <Input
+                      placeholder="Ej: Juan Pérez"
+                      value={identifyName}
+                      onChange={(e) => setIdentifyName(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
+                      <select
+                        value={identifyRole}
+                        onChange={(e) => setIdentifyRole(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Departamento</label>
+                      <select
+                        value={identifyDept}
+                        onChange={(e) => setIdentifyDept(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      >
+                        {DEPARTMENTS.map((d) => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex items-center justify-end gap-3 p-5 border-t border-gray-200">
-              <Button variant="outline" onClick={() => { setShowIdentifyModal(false); setSelectedUnknown(null); }}>
+              <Button variant="outline" onClick={() => { setShowIdentifyModal(false); setSelectedUnknown(null); setIdentifyError(""); }}>
                 Cancelar
               </Button>
-              <Button onClick={handleIdentifyUnknown} disabled={!identifyName.trim()}>
-                <UserPlus className="h-4 w-4 mr-1" /> Identificar y Guardar
+              <Button
+                onClick={handleIdentifyUnknown}
+                disabled={identifyMode === "existing" ? !identifyPersonId : !identifyName.trim()}
+              >
+                <UserPlus className="h-4 w-4 mr-1" />
+                {identifyMode === "existing" ? "Asociar Rostro" : "Crear y Asociar"}
               </Button>
             </div>
           </div>
