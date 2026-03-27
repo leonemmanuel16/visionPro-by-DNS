@@ -59,7 +59,7 @@ class YOLODetector:
             if torch.cuda.is_available():
                 self.device = "cuda"
                 gpu_name = torch.cuda.get_device_name(0)
-                gpu_mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+                gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
                 log.info("detector.gpu_detected", gpu=gpu_name, vram_gb=f"{gpu_mem:.1f}")
             else:
                 self.device = "cpu"
