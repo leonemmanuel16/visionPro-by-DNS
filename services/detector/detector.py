@@ -69,15 +69,20 @@ class YOLODetector:
 
         log.info("detector.loading_model", model=model_name, device=self.device)
 
-        # Try loading model with fallbacks
+        # Try loading model with fallbacks (always load in FP32 first for safe fusing)
         self.model = self._load_model_safe(model_name)
         self.model.to(self.device)
 
         # Enable half-precision (FP16) on GPU for ~2x speedup
+        # Note: model.half() after .to(device) so fuse() runs in FP32
         self.use_half = self.device == "cuda"
         if self.use_half:
-            self.model.half()
-            log.info("detector.fp16_enabled", msg="Using FP16 half-precision for faster inference")
+            try:
+                self.model.model.half()
+                log.info("detector.fp16_enabled", msg="Using FP16 half-precision for faster inference")
+            except Exception as e:
+                log.warning("detector.fp16_failed", error=str(e), msg="Falling back to FP32")
+                self.use_half = False
 
         # Warm up (multiple passes for GPU to optimize kernels)
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
