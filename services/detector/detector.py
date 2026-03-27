@@ -73,22 +73,14 @@ class YOLODetector:
         self.model = self._load_model_safe(model_name)
         self.model.to(self.device)
 
-        # Enable half-precision (FP16) on GPU for ~2x speedup
-        # Note: model.half() after .to(device) so fuse() runs in FP32
-        self.use_half = self.device == "cuda"
-        if self.use_half:
-            try:
-                self.model.model.half()
-                log.info("detector.fp16_enabled", msg="Using FP16 half-precision for faster inference")
-            except Exception as e:
-                log.warning("detector.fp16_failed", error=str(e), msg="Falling back to FP32")
-                self.use_half = False
+        # FP32 mode — T1000 is fast enough without FP16 and avoids fuse() dtype issues
+        self.use_half = False
 
         # Warm up (multiple passes for GPU to optimize kernels)
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         warmup_passes = 3 if self.device == "cuda" else 1
         for _ in range(warmup_passes):
-            self.model.predict(dummy, verbose=False, half=self.use_half)
+            self.model.predict(dummy, verbose=False)
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
@@ -133,7 +125,7 @@ class YOLODetector:
             frame,
             conf=self.confidence,
             verbose=False,
-            half=self.use_half,
+            half=False,
             classes=list(self.TARGET_CLASSES.keys()),
         )
 
