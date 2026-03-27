@@ -221,21 +221,7 @@ async def upload_photo(
     if img is None:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Compute face encoding
-    try:
-        import face_recognition
-        rgb = img[:, :, ::-1]
-        locations = face_recognition.face_locations(rgb, model="hog")
-        if not locations:
-            raise HTTPException(status_code=400, detail="No se detectó ningún rostro en la imagen. Intenta con otra foto.")
-        encodings = face_recognition.face_encodings(rgb, locations)
-        if not encodings:
-            raise HTTPException(status_code=400, detail="No se pudo calcular el embedding del rostro.")
-        embedding = encodings[0]
-    except ImportError:
-        raise HTTPException(status_code=500, detail="face_recognition library not available on API server")
-
-    # Save photo to MinIO
+    # Save photo to MinIO first (always succeeds)
     photo_id = str(uuid.uuid4())
     photo_path = upload_file(
         "snapshots",
@@ -244,26 +230,64 @@ async def upload_photo(
         "image/jpeg",
     )
 
-    # Save embedding to pgvector
-    emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
-    await db.execute(
-        text("""
-            INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
-            VALUES (:id, :person_id, :embedding::vector, :photo_path, 'upload')
-        """),
-        {
-            "id": uuid.uuid4(),
-            "person_id": pid,
-            "embedding": emb_str,
-            "photo_path": photo_path,
-        },
-    )
+    # Try to compute face encoding (may fail if face_recognition not available)
+    embedding = None
+    face_detected = False
+    try:
+        import face_recognition
+        rgb = np.ascontiguousarray(img[:, :, ::-1])
+        locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="hog")
+        if locations:
+            encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
+            if encodings:
+                embedding = encodings[0]
+                face_detected = True
+    except ImportError:
+        pass  # face_recognition not installed — save photo without embedding
+    except Exception as e:
+        pass  # face detection failed — save photo anyway
+
+    if embedding is not None:
+        # Save embedding to pgvector
+        emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
+                VALUES (:id, :person_id, :embedding::vector, :photo_path, 'upload')
+            """),
+            {
+                "id": uuid.uuid4(),
+                "person_id": pid,
+                "embedding": emb_str,
+                "photo_path": photo_path,
+            },
+        )
+    else:
+        # Save photo path without embedding (photo stored but no face vector yet)
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, photo_path, source)
+                VALUES (:id, :person_id, :photo_path, 'upload')
+            """),
+            {
+                "id": uuid.uuid4(),
+                "person_id": pid,
+                "photo_path": photo_path,
+            },
+        )
+
     await db.commit()
 
+    msg = f"Foto subida para {person.name}"
+    if face_detected:
+        msg += " — rostro detectado y embedding calculado"
+    else:
+        msg += " — guardada sin embedding (se procesará cuando el detector la analice)"
+
     return {
-        "message": f"Foto subida y embedding calculado para {person.name}",
+        "message": msg,
         "photo_path": photo_path,
-        "face_detected": True,
+        "face_detected": face_detected,
     }
 
 
