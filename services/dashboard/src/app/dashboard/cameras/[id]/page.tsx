@@ -5,7 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { PTZControls } from "@/components/PTZControls";
-import { DetectionOverlay, DEMO_DETECTIONS } from "@/components/DetectionOverlay";
+import { DetectionOverlay } from "@/components/DetectionOverlay";
+import { wsClient } from "@/lib/websocket";
 import { FisheyeDewarper } from "@/components/FisheyeDewarper";
 import { EventCard } from "@/components/EventCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,6 +90,9 @@ export default function CameraDetailPage() {
     nightMode: "auto" as "auto" | "on" | "off",
     irCut: true,
   });
+
+  // Live tracking from WebSocket
+  const [liveDetections, setLiveDetections] = useState<any[]>([]);
 
   // Event rate limit display
   const EVENT_COOLDOWN = 30;
@@ -180,6 +184,29 @@ export default function CameraDetailPage() {
       setEditModel(camera.model || "");
       setEditCameraType(camera.camera_type || "");
     }
+  }, [camera]);
+
+  // Subscribe to live tracking data from WebSocket
+  useEffect(() => {
+    if (!camera) return;
+
+    const handleTracking = (data: any) => {
+      if (data.type === "tracking" && data.camera_id === camera.id) {
+        setLiveDetections(data.tracks || []);
+      }
+    };
+
+    wsClient.on("tracking", handleTracking);
+
+    // Clear detections if no update for 3 seconds (camera stopped sending)
+    const clearTimer = setInterval(() => {
+      setLiveDetections((prev) => (prev.length > 0 ? [] : prev));
+    }, 3000);
+
+    return () => {
+      wsClient.off("tracking", handleTracking);
+      clearInterval(clearTimer);
+    };
   }, [camera]);
 
   const handleSaveCameraConfig = async () => {
@@ -302,7 +329,7 @@ export default function CameraDetailPage() {
   if (!camera) return <div className="flex items-center justify-center h-screen text-gray-400">Cargando...</div>;
 
   const streamName = `cam_${camera.id.replace(/-/g, "").slice(0, 12)}`;
-  const detections = DEMO_DETECTIONS[camera.id] || [];
+  const detections = liveDetections;
 
   const tabs = [
     { id: "live" as const, label: "En Vivo" },

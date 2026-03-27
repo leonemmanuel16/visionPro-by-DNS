@@ -2,7 +2,8 @@
 
 import { useMemo, useState, useEffect } from "react";
 import { VideoPlayer } from "./VideoPlayer";
-import { DetectionOverlay, DEMO_DETECTIONS } from "./DetectionOverlay";
+import { DetectionOverlay } from "./DetectionOverlay";
+import { wsClient } from "@/lib/websocket";
 import { Badge } from "@/components/ui/badge";
 import { Trash2 } from "lucide-react";
 import Link from "next/link";
@@ -26,15 +27,44 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
   // Read stream quality preference from settings
   const [preferSubStream, setPreferSubStream] = useState(false);
+  // Live tracking detections per camera
+  const [trackingMap, setTrackingMap] = useState<Record<string, any[]>>({});
+
   useEffect(() => {
     try {
       const saved = localStorage.getItem("stream_settings");
       if (saved) {
         const settings = JSON.parse(saved);
-        // Use sub-stream for "low" or "medium" quality
         setPreferSubStream(settings.quality === "low" || settings.quality === "medium");
       }
     } catch { /* ignore */ }
+
+    // Subscribe to live tracking data
+    const handleTracking = (data: any) => {
+      if (data.type === "tracking" && data.camera_id) {
+        setTrackingMap((prev) => ({
+          ...prev,
+          [data.camera_id]: data.tracks || [],
+        }));
+      }
+    };
+    wsClient.on("tracking", handleTracking);
+
+    // Clear stale detections every 3s
+    const clearTimer = setInterval(() => {
+      setTrackingMap((prev) => {
+        const next: Record<string, any[]> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (v.length > 0) next[k] = v;
+        }
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
+    }, 3000);
+
+    return () => {
+      wsClient.off("tracking", handleTracking);
+      clearInterval(clearTimer);
+    };
   }, []);
 
   // Filter out legacy cam-xxxxx IDs that aren't valid UUIDs or cam-timestamp IDs
@@ -58,7 +88,7 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
     <div className={`grid ${gridCols[gridSize]} gap-4`}>
       {validCameras.map((camera) => {
         const streamName = `cam_${camera.id.replace(/-/g, "").slice(0, 12)}`;
-        const detections = DEMO_DETECTIONS[camera.id] || [];
+        const detections = trackingMap[camera.id] || [];
         return (
           <div key={camera.id} className="relative group">
             <Link

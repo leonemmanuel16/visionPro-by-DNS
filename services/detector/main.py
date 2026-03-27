@@ -216,6 +216,40 @@ class DetectorService:
                         except Exception as e:
                             log.debug("face_recognition.error", error=str(e))
 
+                # Publish real-time tracking positions via Redis pub/sub
+                # (every frame, no debounce — for live bounding box overlay)
+                if filtered:
+                    h, w = frame.shape[:2]
+                    tracks = []
+                    for d in filtered:
+                        x1, y1, x2, y2 = d.bbox
+                        track = {
+                            "id": f"t{d.tracker_id}",
+                            "label": d.label.split(":")[0],  # "person" not "person:Juan"
+                            "confidence": round(d.confidence, 2),
+                            "bbox": {
+                                "x": round(x1 / w * 100, 1),
+                                "y": round(y1 / h * 100, 1),
+                                "w": round((x2 - x1) / w * 100, 1),
+                                "h": round((y2 - y1) / h * 100, 1),
+                            },
+                            "trackId": d.tracker_id,
+                        }
+                        if hasattr(d, "metadata") and d.metadata:
+                            pname = d.metadata.get("person_name")
+                            if pname:
+                                track["personName"] = pname
+                        tracks.append(track)
+
+                    import json as _json
+                    await self.redis.publish(
+                        "tracking",
+                        _json.dumps({
+                            "camera_id": camera_id,
+                            "tracks": tracks,
+                        }),
+                    )
+
                 # Publish individual events (debounced per tracker_id)
                 for det in filtered:
                     await publisher.publish(
