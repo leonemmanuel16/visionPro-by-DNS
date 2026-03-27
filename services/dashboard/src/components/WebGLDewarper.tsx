@@ -342,8 +342,8 @@ export function WebGLDewarper({
   videoElement,
   mode,
   initialYaw = 0,
-  initialPitch = 55,
-  initialFov = 70,
+  initialPitch = 50,
+  initialFov = 60,
   centerX = 0.50,
   centerY = 0.50,
   radius = 0.48,  // Hikvision ceiling fisheye: circle fills ~96% of frame height
@@ -388,7 +388,7 @@ export function WebGLDewarper({
 
   if (mode === "panoramic") {
     // Panoramic: 4 strips side by side covering 360° (each 90° wide)
-    // pitch=55 + fov_vertical~35 = 90° — right at boundary, no black
+    // pitch=55 + fov/2=27.5 = 82.5° — well within 90° boundary, no black
     const strips = [
       { yaw: 0, label: "N" },
       { yaw: 90, label: "E" },
@@ -404,7 +404,7 @@ export function WebGLDewarper({
               videoElement={videoElement}
               yaw={s.yaw}
               pitch={55}
-              fov={70}
+              fov={55}
               centerX={centerX}
               centerY={centerY}
               radius={radius}
