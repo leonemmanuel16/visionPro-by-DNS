@@ -37,6 +37,8 @@ class FaceRecognizer:
         self._cache_time: float = 0
         self._cache_ttl: float = 60.0  # refresh cache every 60s
         self._available = False
+        self._unknown_save_times: dict[str, float] = {}  # camera_id -> last save time
+        self._unknown_save_cooldown: float = 30.0  # seconds between unknown face saves per camera
         self._init_library()
         self._ensure_bucket()
 
@@ -285,8 +287,16 @@ class FaceRecognizer:
         """Save an unknown face to the DB for later identification.
 
         Now also saves a cropped face thumbnail to MinIO.
+        Includes cooldown per camera to avoid flooding with saves.
         """
         try:
+            # Debounce: don't save too frequently per camera
+            now = time.monotonic()
+            last_save = self._unknown_save_times.get(camera_id, 0)
+            if now - last_save < self._unknown_save_cooldown:
+                log.debug("face_recognizer.save_debounced", camera_id=camera_id)
+                return
+
             # Save thumbnail image
             thumbnail_path = ""
             if frame is not None and person_bbox is not None:
@@ -296,10 +306,10 @@ class FaceRecognizer:
 
             emb_str = "[" + ",".join(f"{v:.6f}" for v in encoding) + "]"
             async with self.db.acquire() as conn:
-                # Check if similar unknown face already exists (distance < 0.5)
+                # Check if similar unknown face already exists (distance < 0.65)
                 existing = await conn.fetchval("""
                     SELECT id FROM unknown_faces
-                    WHERE embedding <-> $1::vector < 0.5
+                    WHERE embedding <-> $1::vector < 0.65
                     LIMIT 1
                 """, emb_str)
 
@@ -325,6 +335,7 @@ class FaceRecognizer:
                         VALUES ($1::vector, $2, $3)
                     """, emb_str, thumbnail_path, uuid.UUID(camera_id) if camera_id else None)
 
-            log.debug("face_recognizer.unknown_saved", camera_id=camera_id, thumbnail=thumbnail_path)
+            self._unknown_save_times[camera_id] = now
+            log.info("face_recognizer.unknown_saved", camera_id=camera_id, thumbnail=thumbnail_path, is_new=not existing)
         except Exception as e:
             log.warning("face_recognizer.save_unknown_failed", error=str(e))
