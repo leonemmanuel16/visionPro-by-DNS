@@ -10,6 +10,10 @@ services:
     build: ./services/camera-manager
     network_mode: host
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       - REDIS_URL=redis://localhost:6379
       - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@localhost:5432/visionai
@@ -30,6 +34,10 @@ services:
     build: ./services/detector
     network_mode: host
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     # Uncomment below if you have NVIDIA GPU:
     # deploy:
     #   resources:
