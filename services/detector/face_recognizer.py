@@ -306,6 +306,26 @@ class FaceRecognizer:
 
             emb_str = "[" + ",".join(f"{v:.6f}" for v in encoding) + "]"
             async with self.db.acquire() as conn:
+                # Check if this face was already dismissed/deleted by user
+                dismissed = await conn.fetchval("""
+                    SELECT id FROM dismissed_faces
+                    WHERE embedding <-> $1::vector < 0.65
+                    LIMIT 1
+                """, emb_str)
+                if dismissed:
+                    log.debug("face_recognizer.dismissed_face_skipped", camera_id=camera_id)
+                    return
+
+                # Check if already assigned to a known person
+                known = await conn.fetchval("""
+                    SELECT id FROM face_embeddings
+                    WHERE embedding <-> $1::vector < 0.65
+                    LIMIT 1
+                """, emb_str)
+                if known:
+                    log.debug("face_recognizer.known_face_skipped", camera_id=camera_id)
+                    return
+
                 # Check if similar unknown face already exists (distance < 0.65)
                 existing = await conn.fetchval("""
                     SELECT id FROM unknown_faces

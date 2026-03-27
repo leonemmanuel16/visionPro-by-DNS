@@ -132,6 +132,16 @@ CREATE TABLE unknown_faces (
 
 CREATE INDEX idx_unknown_faces_expires ON unknown_faces(expires_at);
 
+-- Dismissed Faces (deleted by user — prevents re-detection)
+CREATE TABLE dismissed_faces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    embedding vector(128),
+    dismissed_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '90 days'
+);
+
+CREATE INDEX idx_dismissed_faces_expires ON dismissed_faces(expires_at);
+
 -- Initial admin user (password: admin123)
 -- Hash generated with bcrypt, rounds=12 — password: admin
 INSERT INTO users (username, email, password_hash, role) VALUES

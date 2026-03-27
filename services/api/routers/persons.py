@@ -410,7 +410,20 @@ async def delete_unknown_face(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """Delete unknown face and move embedding to dismissed list to prevent re-detection."""
     from sqlalchemy import text
     fid = uuid.UUID(face_id)
+
+    # Move embedding to dismissed_faces so detector doesn't re-insert it
+    await db.execute(
+        text("""
+            INSERT INTO dismissed_faces (embedding)
+            SELECT embedding FROM unknown_faces WHERE id = :fid
+            ON CONFLICT DO NOTHING
+        """),
+        {"fid": fid},
+    )
+
+    # Delete the unknown face
     await db.execute(text("DELETE FROM unknown_faces WHERE id = :fid"), {"fid": fid})
     await db.commit()
