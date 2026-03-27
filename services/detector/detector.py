@@ -21,7 +21,11 @@ class Detection:
 
 
 class YOLODetector:
-    """YOLOv8/v10 inference wrapper with PyTorch 2.6 safe loading."""
+    """YOLO inference wrapper with NVIDIA GPU acceleration.
+
+    Supports YOLOv8, v10, v11 models with automatic GPU detection.
+    Optimized for NVIDIA T1000 8GB and similar GPUs.
+    """
 
     # COCO classes we care about
     TARGET_CLASSES = {
@@ -39,12 +43,12 @@ class YOLODetector:
         19: "cow",
     }
 
-    # Fallback model order if primary fails
-    MODEL_FALLBACKS = ["yolov8n", "yolov5nu"]
+    # Fallback model order if primary fails (larger → smaller)
+    MODEL_FALLBACKS = ["yolo11s", "yolov10s", "yolov8n"]
 
     def __init__(
         self,
-        model_name: str = "yolov10n",
+        model_name: str = "yolo11m",
         confidence: float = 0.5,
         device: str = "auto",
     ):
@@ -52,21 +56,40 @@ class YOLODetector:
 
         # Auto-detect device
         if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                self.device = "cuda"
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+                log.info("detector.gpu_detected", gpu=gpu_name, vram_gb=f"{gpu_mem:.1f}")
+            else:
+                self.device = "cpu"
+                log.warning("detector.no_gpu", msg="CUDA not available, using CPU")
         else:
             self.device = device
 
         log.info("detector.loading_model", model=model_name, device=self.device)
 
-        # Try loading model with fallbacks for PyTorch 2.6 compatibility
+        # Try loading model with fallbacks
         self.model = self._load_model_safe(model_name)
         self.model.to(self.device)
 
-        # Warm up
-        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self.model.predict(dummy, verbose=False)
+        # Enable half-precision (FP16) on GPU for ~2x speedup
+        self.use_half = self.device == "cuda"
+        if self.use_half:
+            self.model.half()
+            log.info("detector.fp16_enabled", msg="Using FP16 half-precision for faster inference")
 
-        log.info("detector.model_ready", device=self.device)
+        # Warm up (multiple passes for GPU to optimize kernels)
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        warmup_passes = 3 if self.device == "cuda" else 1
+        for _ in range(warmup_passes):
+            self.model.predict(dummy, verbose=False, half=self.use_half)
+
+        if self.device == "cuda":
+            mem_used = torch.cuda.memory_allocated(0) / (1024**2)
+            log.info("detector.model_ready", device=self.device, gpu_mem_mb=f"{mem_used:.0f}")
+        else:
+            log.info("detector.model_ready", device=self.device)
 
     def _load_model_safe(self, model_name: str) -> YOLO:
         """Load YOLO model with PyTorch 2.6 safe unpickling fallback."""
@@ -105,6 +128,7 @@ class YOLODetector:
             frame,
             conf=self.confidence,
             verbose=False,
+            half=self.use_half,
             classes=list(self.TARGET_CLASSES.keys()),
         )
 

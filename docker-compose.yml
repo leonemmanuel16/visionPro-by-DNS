@@ -38,25 +38,27 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    # Uncomment below if you have NVIDIA GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # NVIDIA GPU acceleration (requires nvidia-container-toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       - REDIS_URL=redis://localhost:6379
       - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@localhost:5432/visionai
       - MINIO_ENDPOINT=localhost:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
       - MINIO_SECRET_KEY=${MINIO_PASSWORD}
-      - MODEL_NAME=${MODEL_NAME:-yolov10s}
+      - MODEL_NAME=${MODEL_NAME:-yolo11m}
       - DETECTION_FPS=${DETECTION_FPS:-10}
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.40}
       - GO2RTC_URL=http://localhost:1984
-      - DEVICE=cpu
+      - DEVICE=${DEVICE:-auto}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
       - go2rtc
       - redis

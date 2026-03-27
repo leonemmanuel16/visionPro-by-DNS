@@ -70,14 +70,46 @@ YAML
     echo -e "${GREEN}  config/go2rtc.yaml creado ✓${NC}"
 fi
 
-# 5. Build and start
-echo -e "${YELLOW}[4/6] Descargando imágenes base...${NC}"
+# 5. Detect NVIDIA GPU
+echo -e "${YELLOW}[4/7] Detectando GPU NVIDIA...${NC}"
+if lspci 2>/dev/null | grep -i nvidia > /dev/null 2>&1; then
+    GPU_NAME=$(lspci | grep -i nvidia | head -1 | sed 's/.*: //')
+    echo -e "${GREEN}  GPU detectada: ${GPU_NAME} ✓${NC}"
+
+    if nvidia-smi > /dev/null 2>&1; then
+        echo -e "${GREEN}  Driver NVIDIA instalado ✓${NC}"
+        if dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
+            echo -e "${GREEN}  NVIDIA Container Toolkit instalado ✓${NC}"
+            echo -e "${GREEN}  → Detector usará GPU para inferencia YOLO${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ NVIDIA Container Toolkit no instalado${NC}"
+            echo -e "${YELLOW}    Ejecuta: sudo bash scripts/install-nvidia.sh${NC}"
+            echo -e "${YELLOW}    → Detector usará CPU por ahora${NC}"
+            # Comment out GPU section temporarily
+            export DEVICE=cpu
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ Driver NVIDIA no instalado${NC}"
+        echo -e "${YELLOW}    Ejecuta: sudo bash scripts/install-nvidia.sh${NC}"
+        echo -e "${YELLOW}    → Detector usará CPU por ahora${NC}"
+        export DEVICE=cpu
+    fi
+else
+    echo -e "${YELLOW}  No se detectó GPU NVIDIA — Detector usará CPU${NC}"
+    # Set DEVICE=cpu in .env if no GPU
+    if ! grep -q "^DEVICE=" .env 2>/dev/null; then
+        echo "DEVICE=cpu" >> .env
+    fi
+fi
+
+# 6. Build and start
+echo -e "${YELLOW}[5/7] Descargando imágenes base...${NC}"
 docker compose pull go2rtc postgres redis minio 2>/dev/null || true
 
-echo -e "${YELLOW}[5/6] Construyendo servicios (esto tarda 5-15 min la primera vez)...${NC}"
+echo -e "${YELLOW}[6/7] Construyendo servicios (esto tarda 5-15 min la primera vez)...${NC}"
 docker compose build --parallel
 
-echo -e "${YELLOW}[6/6] Iniciando servicios...${NC}"
+echo -e "${YELLOW}[7/7] Iniciando servicios...${NC}"
 docker compose up -d
 
 # Wait for services to be healthy
