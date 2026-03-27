@@ -133,13 +133,13 @@ class DetectorService:
         for cam in cameras:
             cam_id = str(cam["id"])
             if cam_id not in self.camera_tasks:
-                # Prefer go2rtc sub-stream via RTSP proxy (shares session with dashboard)
-                # Falls back to direct RTSP if go2rtc not available
+                # Use main stream for better face recognition (GPU can handle 1080p)
+                # Falls back to sub-stream if main not available
                 cam_id_short = cam_id.replace("-", "")[:12]
                 if self.go2rtc_url:
-                    stream_url = f"{self.go2rtc_url.replace('http://', 'rtsp://').replace(':1984', ':8554')}/cam_{cam_id_short}_sub"
+                    stream_url = f"{self.go2rtc_url.replace('http://', 'rtsp://').replace(':1984', ':8554')}/cam_{cam_id_short}"
                 else:
-                    stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
+                    stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
                 if stream_url:
                     task = asyncio.create_task(
                         self._detection_loop(
