@@ -37,8 +37,8 @@ class FaceRecognizer:
         self._cache_time: float = 0
         self._cache_ttl: float = 60.0  # refresh cache every 60s
         self._available = False
-        self._unknown_save_times: dict[str, float] = {}  # camera_id -> last save time
-        self._unknown_save_cooldown: float = 30.0  # seconds between unknown face saves per camera
+        self._recent_saves: list[tuple[np.ndarray, float]] = []  # [(embedding, timestamp)] for short-term dedup
+        self._recent_save_ttl: float = 10.0  # seconds to keep recent saves in memory
         self._init_library()
         self._ensure_bucket()
 
@@ -290,12 +290,16 @@ class FaceRecognizer:
         Includes cooldown per camera to avoid flooding with saves.
         """
         try:
-            # Debounce: don't save too frequently per camera
+            # Short-term dedup: skip if we just saved a very similar face recently
             now = time.monotonic()
-            last_save = self._unknown_save_times.get(camera_id, 0)
-            if now - last_save < self._unknown_save_cooldown:
-                log.debug("face_recognizer.save_debounced", camera_id=camera_id)
-                return
+            # Clean expired entries
+            self._recent_saves = [(emb, t) for emb, t in self._recent_saves if now - t < self._recent_save_ttl]
+            # Check if this encoding was recently saved
+            for saved_emb, saved_time in self._recent_saves:
+                dist = np.linalg.norm(encoding - saved_emb)
+                if dist < 0.5:
+                    log.debug("face_recognizer.save_debounced", distance=f"{dist:.3f}")
+                    return
 
             # Save thumbnail image
             thumbnail_path = ""
@@ -309,7 +313,7 @@ class FaceRecognizer:
                 # Check if this face was already dismissed/deleted by user
                 dismissed = await conn.fetchval("""
                     SELECT id FROM dismissed_faces
-                    WHERE embedding <-> $1::vector < 0.65
+                    WHERE embedding <-> $1::vector < 0.55
                     LIMIT 1
                 """, emb_str)
                 if dismissed:
@@ -319,7 +323,7 @@ class FaceRecognizer:
                 # Check if already assigned to a known person
                 known = await conn.fetchval("""
                     SELECT id FROM face_embeddings
-                    WHERE embedding <-> $1::vector < 0.65
+                    WHERE embedding <-> $1::vector < 0.55
                     LIMIT 1
                 """, emb_str)
                 if known:
@@ -329,7 +333,7 @@ class FaceRecognizer:
                 # Check if similar unknown face already exists (distance < 0.65)
                 existing = await conn.fetchval("""
                     SELECT id FROM unknown_faces
-                    WHERE embedding <-> $1::vector < 0.65
+                    WHERE embedding <-> $1::vector < 0.55
                     LIMIT 1
                 """, emb_str)
 
@@ -355,7 +359,7 @@ class FaceRecognizer:
                         VALUES ($1::vector, $2, $3)
                     """, emb_str, thumbnail_path, uuid.UUID(camera_id) if camera_id else None)
 
-            self._unknown_save_times[camera_id] = now
+            self._recent_saves.append((encoding, now))
             log.info("face_recognizer.unknown_saved", camera_id=camera_id, thumbnail=thumbnail_path, is_new=not existing)
         except Exception as e:
             log.warning("face_recognizer.save_unknown_failed", error=str(e))
