@@ -121,20 +121,31 @@ class FaceRecognizer:
         # Crop person region
         person_crop = frame[y1:y2, x1:x2]
 
+        # Upscale small crops for better face detection
+        crop_h, crop_w = person_crop.shape[:2]
+        if crop_h < 200 or crop_w < 100:
+            scale = max(200 / max(crop_h, 1), 100 / max(crop_w, 1))
+            new_w = int(crop_w * scale)
+            new_h = int(crop_h * scale)
+            person_crop = cv2.resize(person_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            log.debug("face_recognizer.upscaled", original=f"{crop_w}x{crop_h}", scaled=f"{new_w}x{new_h}")
+
         # Convert BGR to RGB for face_recognition
         rgb_crop = person_crop[:, :, ::-1]
 
-        # Detect faces in the crop
+        # Detect faces in the crop (upsample=2 for smaller faces)
         try:
-            face_locations = self._fr.face_locations(rgb_crop, model="hog")
+            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=2, model="hog")
             if not face_locations:
+                log.debug("face_recognizer.no_face_in_crop", crop_size=f"{person_crop.shape[1]}x{person_crop.shape[0]}")
                 return None
 
             face_encodings = self._fr.face_encodings(rgb_crop, face_locations)
+            log.debug("face_recognizer.face_detected", faces=len(face_locations), crop_size=f"{person_crop.shape[1]}x{person_crop.shape[0]}")
             return face_locations, face_encodings
 
         except Exception as e:
-            log.debug("face_recognizer.detect_error", error=str(e))
+            log.warning("face_recognizer.detect_error", error=str(e))
             return None
 
     async def recognize(self, frame: np.ndarray, person_bbox: tuple) -> FaceMatch | None:

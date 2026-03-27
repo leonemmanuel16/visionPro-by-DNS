@@ -161,6 +161,8 @@ class DetectorService:
 
         frame_interval = 1.0 / self.detection_fps
         loop = asyncio.get_event_loop()
+        frame_count = 0
+        face_every_n = 3  # Run face recognition every N frames (balance speed vs detection)
 
         while self.running:
             try:
@@ -186,9 +188,11 @@ class DetectorService:
                 # Filter by zones
                 filtered = zone_manager.filter_detections(tracked, zones)
 
-                # Face recognition for person detections
+                # Face recognition for person detections (every N frames to avoid bottleneck)
+                frame_count += 1
+                run_face = (frame_count % face_every_n == 0) and face_recognizer.available
                 for det in filtered:
-                    if det.label == "person" and face_recognizer.available:
+                    if det.label == "person" and run_face:
                         try:
                             match = await face_recognizer.recognize(frame, det.bbox)
                             if match:
