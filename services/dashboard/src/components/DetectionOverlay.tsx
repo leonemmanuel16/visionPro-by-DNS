@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+interface PersonAttributes {
+  upper_color: string;
+  upper_rgb: number[];
+  lower_color: string;
+  lower_rgb: number[];
+  headgear: string;
+}
 
 interface Detection {
   id: string;
@@ -9,6 +15,7 @@ interface Detection {
   bbox: { x: number; y: number; w: number; h: number }; // percentages 0-100
   personName?: string; // if face recognized
   trackId?: number;
+  attributes?: PersonAttributes;
 }
 
 interface DetectionOverlayProps {
@@ -17,6 +24,12 @@ interface DetectionOverlayProps {
   showConfidence?: boolean;
   className?: string;
 }
+
+const HEADGEAR_ICONS: Record<string, string> = {
+  gorra: "\u{1F9E2}",    // cap emoji
+  sombrero: "\u{1F3A9}", // top hat emoji
+  casco: "\u{26D1}",     // helmet emoji
+};
 
 const LABEL_COLORS: Record<string, { border: string; bg: string; text: string }> = {
   person: { border: "#22c55e", bg: "rgba(34,197,94,0.15)", text: "#16a34a" },
@@ -39,6 +52,8 @@ export function DetectionOverlay({
       {detections.map((det) => {
         const colors = LABEL_COLORS[det.label] || LABEL_COLORS.default;
         const isRecognized = !!det.personName;
+        const attrs = det.attributes;
+        const headgearIcon = attrs?.headgear ? HEADGEAR_ICONS[attrs.headgear] : null;
 
         return (
           <div
@@ -85,16 +100,19 @@ export function DetectionOverlay({
               />
             ))}
 
-            {/* Label */}
+            {/* Top label (name or label) */}
             {showLabels && (
               <div
                 className="absolute left-0 flex items-center gap-1 px-1.5 py-0.5 rounded-b-sm"
                 style={{
                   bottom: "100%",
                   backgroundColor: isRecognized ? "#3b82f6" : colors.border,
-                  maxWidth: "200%",
+                  maxWidth: "250%",
                 }}
               >
+                {headgearIcon && (
+                  <span className="text-[10px]">{headgearIcon}</span>
+                )}
                 {isRecognized ? (
                   <span className="text-[10px] font-bold text-white truncate">
                     {det.personName}
@@ -116,73 +134,37 @@ export function DetectionOverlay({
                 )}
               </div>
             )}
+
+            {/* Bottom label: clothing colors */}
+            {attrs && (attrs.upper_color !== "desconocido" || attrs.lower_color !== "desconocido") && (
+              <div
+                className="absolute left-0 flex items-center gap-1 px-1.5 py-0.5 rounded-t-sm"
+                style={{
+                  top: "100%",
+                  backgroundColor: "rgba(0,0,0,0.7)",
+                  maxWidth: "250%",
+                }}
+              >
+                {/* Upper body color dot */}
+                <div
+                  className="w-2.5 h-2.5 rounded-full border border-white/40"
+                  style={{ backgroundColor: `rgb(${attrs.upper_rgb.join(",")})` }}
+                  title={`Superior: ${attrs.upper_color}`}
+                />
+                <span className="text-[9px] text-white/80">{attrs.upper_color}</span>
+                <span className="text-[8px] text-white/40">|</span>
+                {/* Lower body color dot */}
+                <div
+                  className="w-2.5 h-2.5 rounded-full border border-white/40"
+                  style={{ backgroundColor: `rgb(${attrs.lower_rgb.join(",")})` }}
+                  title={`Inferior: ${attrs.lower_color}`}
+                />
+                <span className="text-[9px] text-white/80">{attrs.lower_color}</span>
+              </div>
+            )}
           </div>
         );
       })}
     </div>
   );
 }
-
-// Demo detections for preview mode
-export const DEMO_DETECTIONS: Record<string, Detection[]> = {
-  "cam-001": [
-    {
-      id: "d1",
-      label: "person",
-      confidence: 0.94,
-      bbox: { x: 30, y: 25, w: 15, h: 55 },
-      personName: "Juan Pérez",
-      trackId: 1,
-    },
-    {
-      id: "d2",
-      label: "person",
-      confidence: 0.89,
-      bbox: { x: 60, y: 30, w: 12, h: 50 },
-      trackId: 2,
-    },
-  ],
-  "cam-002": [
-    {
-      id: "d3",
-      label: "car",
-      confidence: 0.92,
-      bbox: { x: 20, y: 40, w: 25, h: 30 },
-      trackId: 5,
-    },
-    {
-      id: "d4",
-      label: "person",
-      confidence: 0.87,
-      bbox: { x: 55, y: 20, w: 10, h: 45 },
-      personName: "Ana Martínez",
-      trackId: 3,
-    },
-  ],
-  "cam-003": [
-    {
-      id: "d5",
-      label: "person",
-      confidence: 0.96,
-      bbox: { x: 40, y: 15, w: 18, h: 60 },
-      personName: "Roberto Díaz",
-      trackId: 7,
-    },
-  ],
-  "cam-005": [
-    {
-      id: "d6",
-      label: "person",
-      confidence: 0.78,
-      bbox: { x: 35, y: 30, w: 14, h: 48 },
-      trackId: 9,
-    },
-    {
-      id: "d7",
-      label: "truck",
-      confidence: 0.85,
-      bbox: { x: 5, y: 45, w: 28, h: 35 },
-      trackId: 10,
-    },
-  ],
-};

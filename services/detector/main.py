@@ -21,6 +21,7 @@ from tracker import ObjectTracker
 from zone_manager import ZoneManager
 from event_publisher import EventPublisher
 from face_recognizer import FaceRecognizer
+from person_attributes import extract_person_attributes
 
 structlog.configure(
     processors=[
@@ -200,10 +201,22 @@ class DetectorService:
                 # Filter by zones
                 filtered = zone_manager.filter_detections(tracked, zones)
 
-                # Face recognition for person detections (every N frames to avoid bottleneck)
+                # Person attribute extraction + face recognition
                 frame_count += 1
                 run_face = (frame_count % face_every_n == 0) and face_recognizer.available
                 for det in filtered:
+                    # Extract clothing colors and headgear for all persons
+                    if det.label == "person" or det.label.startswith("person:"):
+                        try:
+                            attrs = extract_person_attributes(frame, det.bbox)
+                            if not hasattr(det, "metadata") or det.metadata is None:
+                                det.metadata = {}
+                            det.metadata["upper_color"] = attrs["upper_color"]
+                            det.metadata["lower_color"] = attrs["lower_color"]
+                            det.metadata["headgear"] = attrs["headgear"]
+                        except Exception:
+                            pass
+
                     if det.label == "person" and run_face:
                         try:
                             match = await face_recognizer.recognize(frame, det.bbox)
@@ -221,6 +234,10 @@ class DetectorService:
                                 if result:
                                     face_locations, encodings = result
                                     if encodings:
+                                        # Mark that a face was detected (triggers event alert)
+                                        if not hasattr(det, "metadata") or det.metadata is None:
+                                            det.metadata = {}
+                                        det.metadata["face_detected"] = True
                                         face_loc = face_locations[0] if face_locations else None
                                         await face_recognizer.save_unknown_face(
                                             encoding=encodings[0],
@@ -255,6 +272,13 @@ class DetectorService:
                             pname = d.metadata.get("person_name")
                             if pname:
                                 track["personName"] = pname
+                        # Extract person attributes (clothing colors, headgear)
+                        if d.label.startswith("person"):
+                            try:
+                                attrs = extract_person_attributes(frame, d.bbox)
+                                track["attributes"] = attrs
+                            except Exception:
+                                pass
                         tracks.append(track)
 
                     import json as _json
@@ -266,14 +290,20 @@ class DetectorService:
                         }),
                     )
 
-                # Publish individual events (debounced per tracker_id)
+                # Publish individual events ONLY when face was detected
+                # (either recognized person or unknown face saved)
                 for det in filtered:
-                    await publisher.publish(
-                        camera_id=camera_id,
-                        camera_name=camera_name,
-                        detection=det,
-                        frame=frame,
+                    has_face = (
+                        hasattr(det, "metadata") and det.metadata
+                        and (det.metadata.get("person_name") or det.metadata.get("face_detected"))
                     )
+                    if has_face or not det.label.startswith("person"):
+                        await publisher.publish(
+                            camera_id=camera_id,
+                            camera_name=camera_name,
+                            detection=det,
+                            frame=frame,
+                        )
 
                 # Publish person_count summary when multiple persons detected
                 person_dets = [d for d in filtered if d.label.startswith("person")]
