@@ -102,8 +102,8 @@ class FaceRecognizer:
     def detect_and_encode(self, frame: np.ndarray, person_bbox: tuple) -> tuple[list, list] | None:
         """Detect faces within a person bounding box and return encodings.
 
-        Strategy: crop upper 50% of person bbox (head/shoulders), then upscale
-        aggressively to give face_recognition enough pixels to work with.
+        Strategy: crop upper portion of person bbox with horizontal padding,
+        upscale aggressively, and use more upsample passes for small crops.
 
         Args:
             frame: Full BGR frame from camera
@@ -123,35 +123,51 @@ class FaceRecognizer:
         if x2 <= x1 or y2 <= y1:
             return None
 
-        # Crop upper 50% of person bbox (head + shoulders area)
+        person_w = x2 - x1
         person_h = y2 - y1
-        head_y2 = y1 + int(person_h * 0.5)
-        head_crop = frame[y1:head_y2, x1:x2]
+        is_small = person_w < 120
+
+        # For small bboxes: crop upper 65% and add 20% horizontal padding
+        # For larger bboxes: crop upper 50% (face is more centered)
+        crop_ratio = 0.65 if is_small else 0.50
+        head_y2 = y1 + int(person_h * crop_ratio)
+
+        if is_small:
+            pad_x = int(person_w * 0.2)
+            crop_x1 = max(0, x1 - pad_x)
+            crop_x2 = min(w, x2 + pad_x)
+        else:
+            crop_x1, crop_x2 = x1, x2
+
+        head_crop = frame[y1:head_y2, crop_x1:crop_x2]
 
         crop_h, crop_w = head_crop.shape[:2]
         if crop_h < 10 or crop_w < 10:
             return None
 
-        # Aggressively upscale to minimum 300px width for reliable face detection
-        min_width = 300
+        # Upscale more aggressively for small crops
+        min_width = 400 if is_small else 300
         if crop_w < min_width:
             scale = min_width / crop_w
             new_w = int(crop_w * scale)
             new_h = int(crop_h * scale)
             head_crop = cv2.resize(head_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-            log.debug("face_recognizer.upscaled_head", original=f"{crop_w}x{crop_h}", scaled=f"{new_w}x{new_h}")
+            log.debug("face_recognizer.upscaled_head", original=f"{crop_w}x{crop_h}", scaled=f"{new_w}x{new_h}", small=is_small)
 
         # Convert BGR to RGB for face_recognition
         rgb_crop = np.ascontiguousarray(head_crop[:, :, ::-1])
 
+        # Use more upsample passes for small person bboxes
+        upsample = 2 if is_small else 1
+
         # Detect faces in the head crop
         try:
-            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=1, model="hog")
+            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=upsample, model="hog")
             if not face_locations:
-                log.debug("face_recognizer.no_face_in_crop", crop_size=f"{head_crop.shape[1]}x{head_crop.shape[0]}")
+                log.debug("face_recognizer.no_face_in_crop", crop_size=f"{head_crop.shape[1]}x{head_crop.shape[0]}", upsample=upsample)
                 return None
 
-            # Encode faces — use known_face_locations parameter correctly
+            # Encode faces
             face_encodings = self._fr.face_encodings(rgb_crop, known_face_locations=face_locations)
             if not face_encodings:
                 return None
