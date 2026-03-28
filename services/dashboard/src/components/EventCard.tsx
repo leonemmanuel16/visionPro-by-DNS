@@ -21,6 +21,8 @@ interface EventCardProps {
     lower_color?: string;
     headgear?: string;
     vehicle_color?: string;
+    vehicle_type?: string;
+    license_plate?: string;
     vehicle_moving?: boolean;
   };
 }
@@ -92,16 +94,20 @@ export function EventCard({
                 Desconocido
               </Badge>
             )}
-            {/* Vehicle color badge */}
+            {/* Vehicle attributes */}
+            {isVehicle && metadata?.vehicle_type && (
+              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-700">
+                {metadata.vehicle_type}
+              </span>
+            )}
             {isVehicle && hasVehicleAttrs && (
               <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded text-blue-700 capitalize">
                 {metadata!.vehicle_color}
               </span>
             )}
-            {/* Vehicle motion indicator */}
-            {isVehicle && metadata?.vehicle_moving && (
-              <span className="text-[10px] px-1.5 py-0.5 bg-green-50 border border-green-200 rounded text-green-700">
-                En movimiento
+            {isVehicle && metadata?.license_plate && (
+              <span className="text-[10px] px-1.5 py-0.5 bg-yellow-50 border border-yellow-300 rounded text-yellow-800 font-mono font-bold">
+                {metadata.license_plate}
               </span>
             )}
             {confidence && (

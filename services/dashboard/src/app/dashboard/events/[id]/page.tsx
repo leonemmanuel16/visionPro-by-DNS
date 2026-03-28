@@ -251,7 +251,7 @@ export default function EventDetailPage() {
             )}
 
             {/* Vehicle Attributes */}
-            {isVehicle && event.metadata && event.metadata.vehicle_color && (
+            {isVehicle && event.metadata && (event.metadata.vehicle_color || event.metadata.vehicle_type || event.metadata.license_plate) && (
               <Card className="border-blue-200 bg-blue-50/30">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -259,19 +259,29 @@ export default function EventDetailPage() {
                     Atributos del Vehículo
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
                   <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="text-center p-2 bg-white rounded-lg">
-                      <p className="text-xs text-gray-500 mb-1">Color</p>
-                      <p className="font-medium capitalize">{event.metadata.vehicle_color}</p>
-                    </div>
-                    <div className="text-center p-2 bg-white rounded-lg">
-                      <p className="text-xs text-gray-500 mb-1">Estado</p>
-                      <p className="font-medium">
-                        {event.metadata.vehicle_moving ? "En movimiento" : "Estacionado"}
+                    {event.metadata.vehicle_type && (
+                      <div className="text-center p-2 bg-white rounded-lg">
+                        <p className="text-xs text-gray-500 mb-1">Tipo</p>
+                        <p className="font-medium">{event.metadata.vehicle_type}</p>
+                      </div>
+                    )}
+                    {event.metadata.vehicle_color && (
+                      <div className="text-center p-2 bg-white rounded-lg">
+                        <p className="text-xs text-gray-500 mb-1">Color</p>
+                        <p className="font-medium capitalize">{event.metadata.vehicle_color}</p>
+                      </div>
+                    )}
+                  </div>
+                  {event.metadata.license_plate && (
+                    <div className="text-center p-3 bg-yellow-50 border-2 border-yellow-300 rounded-lg">
+                      <p className="text-xs text-gray-500 mb-1">Placa</p>
+                      <p className="text-xl font-bold font-mono tracking-wider text-gray-900">
+                        {event.metadata.license_plate}
                       </p>
                     </div>
-                  </div>
+                  )}
                 </CardContent>
               </Card>
             )}

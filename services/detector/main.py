@@ -233,14 +233,17 @@ class DetectorService:
                         except Exception:
                             pass
 
-                    # Extract vehicle color
+                    # Extract vehicle attributes (color, type, plate)
                     if base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
                         try:
-                            vattrs = extract_vehicle_attributes(frame, det.bbox)
+                            vattrs = extract_vehicle_attributes(frame, det.bbox, yolo_label=base_label)
                             if det.metadata is None:
                                 det.metadata = {}
                             det.metadata["vehicle_color"] = vattrs["vehicle_color"]
                             det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
+                            det.metadata["vehicle_type"] = vattrs["vehicle_type"]
+                            if vattrs.get("license_plate"):
+                                det.metadata["license_plate"] = vattrs["license_plate"]
                         except Exception:
                             pass
 
@@ -326,7 +329,8 @@ class DetectorService:
                         if hasattr(d, "metadata") and d.metadata:
                             attrs = {}
                             for attr_key in ("upper_color", "lower_color", "headgear",
-                                             "vehicle_color", "vehicle_rgb"):
+                                             "vehicle_color", "vehicle_rgb",
+                                             "vehicle_type", "license_plate"):
                                 if attr_key in d.metadata:
                                     attrs[attr_key] = d.metadata[attr_key]
                             if attrs:
@@ -345,10 +349,9 @@ class DetectorService:
                 # ── BEST-SHOT EVENT PUBLISHING ──────────────────────────
                 # Rules:
                 #   PERSONS  → Best-Shot: wait, accumulate, pick best frame with face
-                #   VEHICLES → ONLY publish if crossing a zone. Parked cars = NO event.
+                #   VEHICLES → Best-Shot: ONE alert per vehicle, pick best frame
+                #              (with plate/color/type), then NEVER repeat for same spot
                 #   ANIMALS  → Best-Shot with simpler criteria
-                #
-                # This completely eliminates parked-car spam.
                 best_shot.cleanup()
 
                 VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
@@ -357,22 +360,7 @@ class DetectorService:
                     base_label = det.label.split(":")[0]
                     metadata = det.metadata or {}
 
-                    # ── VEHICLES: Only zone-crossing events ──
-                    if base_label in VEHICLE_LABELS:
-                        # Only publish if this vehicle triggered a zone crossing
-                        has_zone = metadata.get("zone_id") is not None
-                        if not has_zone:
-                            continue  # Skip: parked/passing vehicle without zone = NO event
-                        # Zone crossing vehicle → publish immediately (already filtered by zones)
-                        await publisher.publish(
-                            camera_id=camera_id,
-                            camera_name=camera_name,
-                            detection=det,
-                            frame=frame,
-                        )
-                        continue
-
-                    # ── PERSONS: Best-shot accumulation ──
+                    # All detections go through Best-Shot accumulator
                     best = best_shot.add_candidate(
                         camera_id=camera_id,
                         tracker_id=det.tracker_id,
