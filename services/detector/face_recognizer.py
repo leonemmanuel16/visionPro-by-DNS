@@ -102,8 +102,11 @@ class FaceRecognizer:
     def detect_and_encode(self, frame: np.ndarray, person_bbox: tuple) -> tuple[list, list] | None:
         """Detect faces within a person bounding box and return encodings.
 
-        Strategy: crop upper portion of person bbox with horizontal padding,
-        upscale aggressively, and use more upsample passes for small crops.
+        Strategy:
+        1. For large person bboxes (>200px wide): crop upper half + upscale, use HOG
+        2. For small bboxes: run face detection on a wide region of the original
+           frame (no upscaling) to preserve native resolution, then use CNN model
+           for better small-face detection
 
         Args:
             frame: Full BGR frame from camera
@@ -125,55 +128,109 @@ class FaceRecognizer:
 
         person_w = x2 - x1
         person_h = y2 - y1
-        is_small = person_w < 120
 
-        # For small bboxes: crop upper 65% and add 20% horizontal padding
-        # For larger bboxes: crop upper 50% (face is more centered)
-        crop_ratio = 0.65 if is_small else 0.50
-        head_y2 = y1 + int(person_h * crop_ratio)
-
-        if is_small:
-            pad_x = int(person_w * 0.2)
-            crop_x1 = max(0, x1 - pad_x)
-            crop_x2 = min(w, x2 + pad_x)
+        if person_w >= 200:
+            # Large bbox: original crop strategy works fine
+            return self._detect_face_crop(frame, x1, y1, x2, y2, h, w)
         else:
-            crop_x1, crop_x2 = x1, x2
+            # Small bbox: use wide native-resolution region
+            return self._detect_face_wide(frame, x1, y1, x2, y2, h, w, person_w, person_h)
 
-        head_crop = frame[y1:head_y2, crop_x1:crop_x2]
+    def _detect_face_crop(self, frame, x1, y1, x2, y2, h, w):
+        """Face detection for large person bboxes using upper-half crop."""
+        person_h = y2 - y1
+        head_y2 = y1 + int(person_h * 0.5)
+        head_crop = frame[y1:head_y2, x1:x2]
 
         crop_h, crop_w = head_crop.shape[:2]
         if crop_h < 10 or crop_w < 10:
             return None
 
-        # Upscale more aggressively for small crops
-        min_width = 400 if is_small else 300
-        if crop_w < min_width:
-            scale = min_width / crop_w
-            new_w = int(crop_w * scale)
-            new_h = int(crop_h * scale)
-            head_crop = cv2.resize(head_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-            log.debug("face_recognizer.upscaled_head", original=f"{crop_w}x{crop_h}", scaled=f"{new_w}x{new_h}", small=is_small)
+        if crop_w < 300:
+            scale = 300 / crop_w
+            head_crop = cv2.resize(head_crop, (int(crop_w * scale), int(crop_h * scale)), interpolation=cv2.INTER_CUBIC)
 
-        # Convert BGR to RGB for face_recognition
         rgb_crop = np.ascontiguousarray(head_crop[:, :, ::-1])
 
-        # Use more upsample passes for small person bboxes
-        upsample = 2 if is_small else 1
-
-        # Detect faces in the head crop
         try:
-            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=upsample, model="hog")
+            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=1, model="hog")
             if not face_locations:
-                log.debug("face_recognizer.no_face_in_crop", crop_size=f"{head_crop.shape[1]}x{head_crop.shape[0]}", upsample=upsample)
                 return None
-
-            # Encode faces
             face_encodings = self._fr.face_encodings(rgb_crop, known_face_locations=face_locations)
             if not face_encodings:
                 return None
-
-            log.info("face_recognizer.face_detected", faces=len(face_locations), crop_size=f"{head_crop.shape[1]}x{head_crop.shape[0]}")
+            log.info("face_recognizer.face_detected", faces=len(face_locations), method="crop")
             return face_locations, face_encodings
+        except Exception as e:
+            log.warning("face_recognizer.detect_error", error=str(e))
+            return None
+
+    def _detect_face_wide(self, frame, x1, y1, x2, y2, h, w, person_w, person_h):
+        """Face detection for small person bboxes using a wide native-res region.
+
+        Instead of upscaling a tiny crop (which blurs the face), we take a large
+        region of the original frame centered on the person. This preserves the
+        native camera resolution and gives the face detector more context.
+        """
+        # Take a region 4x wider and 2x taller than the person bbox (capped at frame)
+        cx = (x1 + x2) // 2
+        cy = y1 + int(person_h * 0.3)  # bias toward head
+        region_w = max(person_w * 4, 400)
+        region_h = max(person_h * 2, 300)
+
+        rx1 = max(0, cx - region_w // 2)
+        rx2 = min(w, cx + region_w // 2)
+        ry1 = max(0, cy - region_h // 2)
+        ry2 = min(h, cy + region_h // 2)
+
+        region = frame[ry1:ry2, rx1:rx2]
+        region_h_actual, region_w_actual = region.shape[:2]
+        if region_h_actual < 20 or region_w_actual < 20:
+            return None
+
+        rgb_region = np.ascontiguousarray(region[:, :, ::-1])
+
+        try:
+            # Use CNN model for better small-face detection (uses GPU if available)
+            try:
+                face_locations = self._fr.face_locations(rgb_region, number_of_times_to_upsample=1, model="cnn")
+            except Exception:
+                # CNN not available (no GPU dlib), fall back to HOG with more upsamples
+                face_locations = self._fr.face_locations(rgb_region, number_of_times_to_upsample=2, model="hog")
+
+            if not face_locations:
+                log.debug("face_recognizer.no_face_in_region",
+                          region_size=f"{region_w_actual}x{region_h_actual}",
+                          person_size=f"{person_w}x{person_h}")
+                return None
+
+            # Filter: only keep faces that overlap with the person bbox
+            # Convert person bbox to region-relative coordinates
+            rel_x1 = x1 - rx1
+            rel_y1 = y1 - ry1
+            rel_x2 = x2 - rx1
+            rel_y2 = y2 - ry1
+
+            matched_faces = []
+            for (top, right, bottom, left) in face_locations:
+                face_cx = (left + right) // 2
+                face_cy = (top + bottom) // 2
+                # Check if face center is within or near the person bbox
+                if (rel_x1 - 20 <= face_cx <= rel_x2 + 20 and
+                        rel_y1 - 20 <= face_cy <= rel_y2 + 20):
+                    matched_faces.append((top, right, bottom, left))
+
+            if not matched_faces:
+                log.debug("face_recognizer.face_outside_bbox", faces_found=len(face_locations))
+                return None
+
+            face_encodings = self._fr.face_encodings(rgb_region, known_face_locations=matched_faces)
+            if not face_encodings:
+                return None
+
+            log.info("face_recognizer.face_detected", faces=len(matched_faces),
+                     method="wide_region", region_size=f"{region_w_actual}x{region_h_actual}")
+            return matched_faces, face_encodings
 
         except Exception as e:
             log.warning("face_recognizer.detect_error", error=str(e))
