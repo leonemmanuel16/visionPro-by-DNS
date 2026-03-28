@@ -266,9 +266,9 @@ def extract_vehicle_attributes(frame: np.ndarray, bbox: tuple, yolo_label: str =
     # ── Type classification ──
     result["vehicle_type"] = _classify_vehicle_type(bbox, yolo_label)
 
-    # ── License plate OCR ──
-    plate = _read_license_plate(frame, bbox)
-    if plate:
-        result["license_plate"] = plate
+    # ── License plate OCR (disabled — easyocr too heavy for this server) ──
+    # plate = _read_license_plate(frame, bbox)
+    # if plate:
+    #     result["license_plate"] = plate
 
     return result
