@@ -522,6 +522,165 @@ async def get_unknown_face_thumbnail(
         raise HTTPException(404, f"Thumbnail not available: {str(e)}")
 
 
+@router.post("/events/{event_id}/associate-person")
+async def associate_event_to_person(
+    event_id: str,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Extract face from event snapshot and associate it with a person.
+
+    Takes the event snapshot, detects the face, computes the embedding,
+    and saves it as a face_embedding for the specified person.
+    """
+    from sqlalchemy import text
+    from fastapi.responses import JSONResponse
+
+    person_id = data.get("person_id")
+    if not person_id:
+        raise HTTPException(status_code=400, detail="person_id is required")
+
+    eid = uuid.UUID(event_id)
+    pid = uuid.UUID(person_id)
+
+    # Verify person exists
+    result = await db.execute(select(Person).where(Person.id == pid))
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    # Get event snapshot path
+    event_row = await db.execute(
+        text("SELECT snapshot_path, thumbnail_path, metadata FROM events WHERE id = :eid"),
+        {"eid": eid},
+    )
+    event = event_row.first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    snapshot_path = event[0] or event[1]  # Prefer snapshot, fallback to thumbnail
+    if not snapshot_path:
+        raise HTTPException(status_code=400, detail="Event has no snapshot image")
+
+    # Load the image from MinIO
+    parts = snapshot_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid snapshot path")
+
+    bucket, object_name = parts[0], parts[1]
+    try:
+        minio = get_minio_client()
+        obj = minio.get_object(bucket, object_name)
+        img_bytes = obj.read()
+        obj.close()
+        obj.release_conn()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not load snapshot: {e}")
+
+    # Decode image
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode snapshot image")
+
+    # Detect face and compute embedding
+    embedding = None
+    face_crop_bytes = None
+    try:
+        import face_recognition
+        rgb = np.ascontiguousarray(img[:, :, ::-1])
+
+        # Try CNN model first (better for surveillance images), fallback to HOG
+        locations = face_recognition.face_locations(rgb, model="cnn")
+        if not locations:
+            locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=2, model="hog")
+
+        if locations:
+            encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
+            if encodings:
+                embedding = encodings[0]
+
+                # Crop the face for the photo thumbnail
+                top, right, bottom, left = locations[0]
+                # Add padding
+                pad = int((bottom - top) * 0.3)
+                h, w = img.shape[:2]
+                top = max(0, top - pad)
+                left = max(0, left - pad)
+                bottom = min(h, bottom + pad)
+                right = min(w, right + pad)
+                face_crop = img[top:bottom, left:right]
+                _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                face_crop_bytes = buf.tobytes()
+    except ImportError:
+        # face_recognition not installed — save event snapshot as photo without embedding
+        face_crop_bytes = img_bytes
+    except Exception:
+        face_crop_bytes = img_bytes
+
+    # Save face crop to MinIO
+    photo_id = str(uuid.uuid4())
+    photo_path = f"snapshots/faces/{person_id}/{photo_id}.jpg"
+    try:
+        save_bytes = face_crop_bytes or img_bytes
+        minio = get_minio_client()
+        minio.put_object(
+            "snapshots",
+            f"faces/{person_id}/{photo_id}.jpg",
+            io.BytesIO(save_bytes),
+            len(save_bytes),
+            content_type="image/jpeg",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save photo: {e}")
+
+    # Save embedding to face_embeddings
+    from sqlalchemy import text as sql_text
+
+    new_id = uuid.uuid4()
+    if embedding is not None:
+        emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+        await db.execute(
+            sql_text("""
+                INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
+                VALUES (:id, :person_id, CAST(:embedding AS vector), :photo_path, 'event')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "embedding": emb_str,
+                "photo_path": photo_path,
+            },
+        )
+    else:
+        await db.execute(
+            sql_text("""
+                INSERT INTO face_embeddings (id, person_id, photo_path, source)
+                VALUES (:id, :person_id, :photo_path, 'event')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "photo_path": photo_path,
+            },
+        )
+
+    await db.commit()
+
+    msg = f"Rostro del evento asociado a {person.name}"
+    if embedding is not None:
+        msg += " — embedding calculado para reconocimiento futuro"
+
+    return {
+        "message": msg,
+        "person_id": str(pid),
+        "person_name": person.name,
+        "face_detected": embedding is not None,
+        "photo_path": photo_path,
+    }
+
+
 @router.delete("/unknown-faces/{face_id}", status_code=204)
 async def delete_unknown_face(
     face_id: str,

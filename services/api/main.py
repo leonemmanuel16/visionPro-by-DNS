@@ -59,6 +59,29 @@ async def startup():
     except Exception as e:
         log.warning("api.minio_init_failed", error=str(e))
 
+    # Auto-register all camera streams in go2rtc on startup
+    try:
+        import asyncio
+        from database import AsyncSessionLocal as async_session
+        from services.camera_service import get_cameras as _get_cams
+        from routers.cameras import _register_streams_in_go2rtc
+
+        # Wait a bit for go2rtc to be ready
+        await asyncio.sleep(3)
+
+        async with async_session() as db:
+            cams = await _get_cams(db, is_enabled=True)
+            registered = 0
+            for cam in cams:
+                if cam.rtsp_main_stream:
+                    await _register_streams_in_go2rtc(
+                        str(cam.id), cam.rtsp_main_stream, cam.rtsp_sub_stream
+                    )
+                    registered += 1
+            log.info("api.go2rtc_streams_registered", count=registered)
+    except Exception as e:
+        log.warning("api.go2rtc_init_failed", error=str(e))
+
 
 @app.get("/health")
 async def health():

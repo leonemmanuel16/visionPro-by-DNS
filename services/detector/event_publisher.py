@@ -1,7 +1,21 @@
-"""Event Publisher - Save snapshots and publish detection events."""
+"""Event Publisher - Save snapshots and publish detection events.
+
+Key behaviors:
+- Vehicles (car, truck, bus, motorcycle, bicycle):
+    * ONE event when first detected, then NEVER again while stationary.
+    * Uses spatial deduplication: if a "new" tracker appears at the same
+      position as a recently-published vehicle, it's suppressed.
+    * Only re-publishes if the vehicle physically moves across the frame.
+- Persons:
+    * Only when face is detected (handled in main.py).
+    * 10s debounce per tracker_id.
+- Animals / other:
+    * 30s debounce.
+"""
 
 import io
 import json
+import math
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,10 +33,40 @@ from tracker import TrackedDetection
 log = structlog.get_logger()
 
 
+def _iou(box_a: tuple, box_b: tuple) -> float:
+    """Intersection-over-Union between two (x1,y1,x2,y2) boxes."""
+    xa = max(box_a[0], box_b[0])
+    ya = max(box_a[1], box_b[1])
+    xb = min(box_a[2], box_b[2])
+    yb = min(box_a[3], box_b[3])
+    inter = max(0, xb - xa) * max(0, yb - ya)
+    area_a = max(0, box_a[2] - box_a[0]) * max(0, box_a[3] - box_a[1])
+    area_b = max(0, box_b[2] - box_b[0]) * max(0, box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 class EventPublisher:
     """Publishes detection events to Redis Streams and stores media in MinIO."""
 
-    DEBOUNCE_SECONDS = 10.0  # Max 1 event per tracked object every 10 seconds
+    # Debounce per category
+    DEBOUNCE_PERSON = 10.0
+    DEBOUNCE_VEHICLE = 86400.0   # 24 hours — effectively "once per tracker session"
+    DEBOUNCE_ANIMAL = 60.0
+    DEBOUNCE_DEFAULT = 60.0
+
+    # Labels considered vehicles
+    VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
+
+    # Spatial dedup: if a new vehicle bbox overlaps >50% with a known parked
+    # vehicle, suppress the event.
+    VEHICLE_IOU_THRESHOLD = 0.50
+
+    # Stationary check: center must move >3% of frame to be "in motion"
+    MOTION_THRESHOLD_PCT = 3.0
+
+    # How long parked-vehicle memory persists (seconds)
+    PARKED_MEMORY_TTL = 3600  # 1 hour
 
     def __init__(
         self,
@@ -40,7 +84,17 @@ class EventPublisher:
             secret_key=minio_secret_key,
             secure=False,
         )
+        # Per-tracker debounce timestamps
         self._last_published: dict[str, float] = {}
+
+        # Per-tracker last known center (for motion detection)
+        self._last_center: dict[str, tuple[float, float]] = {}
+
+        # Parked vehicle memory: camera_id → list of (bbox, timestamp)
+        # If a new vehicle appears at the same spot, it's probably the same car.
+        self._parked_vehicles: dict[str, list[tuple[tuple, float]]] = {}
+
+        self._last_cleanup = time.monotonic()
         self._ensure_buckets()
 
     def _ensure_buckets(self):
@@ -48,22 +102,118 @@ class EventPublisher:
             if not self.minio.bucket_exists(bucket):
                 self.minio.make_bucket(bucket)
 
-    def _should_debounce(self, camera_id: str, label: str, tracker_id: int | None = None) -> bool:
-        """Check if we should skip this event (debounce).
+    # ------------------------------------------------------------------
+    # Vehicle spatial deduplication
+    # ------------------------------------------------------------------
 
-        Uses tracker_id when available so each tracked object has its own
-        debounce window.  Falls back to camera+label for untracked objects.
+    def _is_duplicate_vehicle(self, camera_id: str, bbox: tuple) -> bool:
+        """Check if a vehicle at this bbox was already published recently.
+
+        Compares against a list of known parked-vehicle bboxes for this camera.
+        If IoU > threshold with any known parked vehicle, it's a duplicate.
         """
-        if tracker_id is not None:
-            key = f"{camera_id}:track:{tracker_id}"
-        else:
-            key = f"{camera_id}:{label}"
+        now = time.monotonic()
+        parked = self._parked_vehicles.get(camera_id, [])
+
+        # Clean expired entries
+        parked = [(b, t) for b, t in parked if now - t < self.PARKED_MEMORY_TTL]
+        self._parked_vehicles[camera_id] = parked
+
+        for parked_bbox, _ in parked:
+            if _iou(bbox, parked_bbox) > self.VEHICLE_IOU_THRESHOLD:
+                return True
+        return False
+
+    def _remember_parked_vehicle(self, camera_id: str, bbox: tuple) -> None:
+        """Remember that a vehicle was published at this bbox."""
+        now = time.monotonic()
+        if camera_id not in self._parked_vehicles:
+            self._parked_vehicles[camera_id] = []
+        self._parked_vehicles[camera_id].append((bbox, now))
+
+    def _forget_vehicle_at(self, camera_id: str, bbox: tuple) -> None:
+        """Remove a parked vehicle from memory (it moved away)."""
+        parked = self._parked_vehicles.get(camera_id, [])
+        self._parked_vehicles[camera_id] = [
+            (b, t) for b, t in parked if _iou(b, bbox) < self.VEHICLE_IOU_THRESHOLD
+        ]
+
+    # ------------------------------------------------------------------
+    # Motion detection
+    # ------------------------------------------------------------------
+
+    def _is_moving(self, camera_id: str, tracker_id: int, bbox: tuple, frame_shape: tuple) -> bool:
+        """Check if a tracked object is actively moving.
+
+        Returns True if the center has moved >MOTION_THRESHOLD_PCT since last check.
+        """
+        key = f"{camera_id}:center:{tracker_id}"
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+
+        if key not in self._last_center:
+            self._last_center[key] = (cx, cy)
+            return True  # First sighting = treat as moving
+
+        prev_cx, prev_cy = self._last_center[key]
+        h, w = frame_shape[:2]
+        dist_pct = math.sqrt(((cx - prev_cx) / w * 100) ** 2 + ((cy - prev_cy) / h * 100) ** 2)
+
+        self._last_center[key] = (cx, cy)
+        return dist_pct > self.MOTION_THRESHOLD_PCT
+
+    # ------------------------------------------------------------------
+    # Debounce
+    # ------------------------------------------------------------------
+
+    def _get_debounce_time(self, label: str) -> float:
+        base = label.split(":")[0]
+        if base == "person":
+            return self.DEBOUNCE_PERSON
+        if base in self.VEHICLE_LABELS:
+            return self.DEBOUNCE_VEHICLE
+        if base in ("cat", "dog", "bird", "horse", "cow", "sheep"):
+            return self.DEBOUNCE_ANIMAL
+        return self.DEBOUNCE_DEFAULT
+
+    def _should_debounce(self, camera_id: str, label: str, tracker_id: int | None = None) -> bool:
+        debounce_time = self._get_debounce_time(label)
+        key = f"{camera_id}:track:{tracker_id}" if tracker_id is not None else f"{camera_id}:{label}"
         now = time.monotonic()
         last = self._last_published.get(key, 0)
-        if now - last < self.DEBOUNCE_SECONDS:
+        if now - last < debounce_time:
             return True
         self._last_published[key] = now
         return False
+
+    # ------------------------------------------------------------------
+    # Periodic cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_caches(self):
+        now = time.monotonic()
+        if now - self._last_cleanup < 300:
+            return
+        self._last_cleanup = now
+
+        # Debounce cache: remove entries older than 1 hour
+        stale = [k for k, v in self._last_published.items() if now - v > 3600]
+        for k in stale:
+            del self._last_published[k]
+
+        # Center cache: remove old entries
+        stale_c = [k for k, v in self._last_center.items() if True]  # cleared periodically
+        if len(self._last_center) > 1000:
+            self._last_center.clear()
+
+        # Parked vehicles: already cleaned in _is_duplicate_vehicle
+
+        if stale:
+            log.debug("event.cache_cleanup", debounce_removed=len(stale))
+
+    # ------------------------------------------------------------------
+    # Main publish
+    # ------------------------------------------------------------------
 
     async def publish(
         self,
@@ -73,43 +223,70 @@ class EventPublisher:
         frame: np.ndarray,
     ) -> None:
         """Process and publish a detection event."""
-        # Only publish new objects or after debounce (per tracker_id)
-        tid = detection.tracker_id if hasattr(detection, "tracker_id") else None
-        if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
-            return
+        self._cleanup_caches()
 
+        tid = detection.tracker_id if hasattr(detection, "tracker_id") else None
+        base_label = detection.label.split(":")[0]
+        is_vehicle = base_label in self.VEHICLE_LABELS
+
+        # ── VEHICLE LOGIC ──────────────────────────────────────────────
+        if is_vehicle:
+            moving = False
+            if tid is not None and frame is not None:
+                moving = self._is_moving(camera_id, tid, detection.bbox, frame.shape)
+
+            if not moving:
+                # Stationary vehicle — check if we already published one at this location
+                if self._is_duplicate_vehicle(camera_id, detection.bbox):
+                    return  # Already known parked vehicle → suppress completely
+
+                # First time seeing a vehicle parked here
+                if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
+                    return
+
+                # Publish once, then remember this spot
+                self._remember_parked_vehicle(camera_id, detection.bbox)
+            else:
+                # Vehicle is moving — apply normal debounce (24h per tracker, so effectively once)
+                if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
+                    return
+                # It moved away from a parked spot — forget that spot
+                self._forget_vehicle_at(camera_id, detection.bbox)
+
+        # ── NON-VEHICLE LOGIC ──────────────────────────────────────────
+        else:
+            if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
+                return
+
+        # ── Save & publish ─────────────────────────────────────────────
         event_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         timestamp_str = now.strftime("%Y%m%d_%H%M%S")
 
-        # Save snapshot (full frame with bounding box)
         snapshot_path = await self._save_snapshot(event_id, timestamp_str, frame, detection)
-
-        # Save thumbnail (cropped detection)
         thumbnail_path = await self._save_thumbnail(event_id, timestamp_str, frame, detection)
 
-        # Determine event type
         event_type = detection.label
-        if hasattr(detection, "metadata") and detection.metadata:
-            if "zone_id" in detection.metadata:
-                event_type = "zone_crossing"
-
-        # Get zone_id if available
         zone_id = None
         metadata = {}
         if hasattr(detection, "metadata") and detection.metadata:
+            if "zone_id" in detection.metadata:
+                event_type = "zone_crossing"
             zone_id = detection.metadata.get("zone_id")
             metadata = detection.metadata
 
         metadata["tracker_id"] = detection.tracker_id
 
-        # Store frame dimensions so heatmap can map bbox correctly
-        # (bbox is in pixel coords of the source frame resolution)
         if frame is not None:
             metadata["frame_width"] = int(frame.shape[1])
             metadata["frame_height"] = int(frame.shape[0])
 
-        # Insert event into database
+        # Mark if vehicle was moving
+        if is_vehicle:
+            metadata["vehicle_moving"] = tid is not None and frame is not None and self._is_moving(
+                camera_id, tid, detection.bbox, frame.shape
+            )
+
         async with self.db.acquire() as conn:
             await conn.execute(
                 """INSERT INTO events
@@ -129,7 +306,6 @@ class EventPublisher:
                 now,
             )
 
-        # Publish to Redis Stream
         event_data = {
             "event_id": event_id,
             "camera_id": camera_id,
@@ -148,9 +324,14 @@ class EventPublisher:
             event_id=event_id,
             camera=camera_name,
             label=detection.label,
-            tracker_id=getattr(detection, "tracker_id", None),
+            tracker_id=tid,
             confidence=f"{detection.confidence:.2f}",
+            moving=metadata.get("vehicle_moving") if is_vehicle else None,
         )
+
+    # ------------------------------------------------------------------
+    # Person count
+    # ------------------------------------------------------------------
 
     async def publish_person_count(
         self,
@@ -160,11 +341,6 @@ class EventPublisher:
         person_details: list[dict],
         frame: np.ndarray,
     ) -> None:
-        """Publish a person_count event summarising all persons in frame.
-
-        This fires once per frame (debounced) and includes the count and
-        details of each tracked person (tracker_id, person_name, bbox).
-        """
         if self._should_debounce(camera_id, "person_count"):
             return
 
@@ -180,7 +356,6 @@ class EventPublisher:
             metadata["frame_width"] = int(frame.shape[1])
             metadata["frame_height"] = int(frame.shape[0])
 
-        # Save a snapshot with ALL bounding boxes drawn
         snapshot_path = None
         try:
             annotated = frame.copy()
@@ -194,7 +369,6 @@ class EventPublisher:
                         annotated, name, (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2,
                     )
-            # Add count overlay
             cv2.putText(
                 annotated, f"Personas: {person_count}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2,
@@ -240,15 +414,16 @@ class EventPublisher:
             "event.person_count",
             camera=camera_name,
             count=person_count,
-            names=[p.get("person_name", "?") for p in person_details],
         )
+
+    # ------------------------------------------------------------------
+    # Media helpers
+    # ------------------------------------------------------------------
 
     async def _save_snapshot(
         self, event_id: str, timestamp: str, frame: np.ndarray, detection: TrackedDetection
     ) -> str | None:
-        """Save annotated frame to MinIO."""
         try:
-            # Draw bounding box on frame
             annotated = frame.copy()
             x1, y1, x2, y2 = [int(c) for c in detection.bbox]
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -257,11 +432,8 @@ class EventPublisher:
                 annotated, label_text, (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2,
             )
-
-            # Encode to JPEG
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
             data = buffer.tobytes()
-
             object_name = f"{timestamp}/{event_id}.jpg"
             self.minio.put_object(
                 "snapshots", object_name, io.BytesIO(data), len(data),
@@ -275,21 +447,15 @@ class EventPublisher:
     async def _save_thumbnail(
         self, event_id: str, timestamp: str, frame: np.ndarray, detection: TrackedDetection
     ) -> str | None:
-        """Save cropped detection thumbnail to MinIO."""
         try:
             x1, y1, x2, y2 = [max(0, int(c)) for c in detection.bbox]
             h, w = frame.shape[:2]
             x2, y2 = min(x2, w), min(y2, h)
-
             if x2 <= x1 or y2 <= y1:
                 return None
-
             crop = frame[y1:y2, x1:x2]
-
-            # Encode to JPEG
             _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
             data = buffer.tobytes()
-
             object_name = f"{timestamp}/{event_id}_thumb.jpg"
             self.minio.put_object(
                 "thumbnails", object_name, io.BytesIO(data), len(data),

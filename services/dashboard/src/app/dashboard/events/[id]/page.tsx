@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { format } from "date-fns";
 import Link from "next/link";
-import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt } from "lucide-react";
+import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt, Car } from "lucide-react";
 import { getApiUrl } from "@/lib/urls";
 
 const ROLES = ["Empleado", "Visitante", "Guardia", "Contratista", "Proveedor", "VIP", "Restringido"];
@@ -46,31 +46,54 @@ export default function EventDetailPage() {
   const personId = event?.metadata?.person_id;
   const faceDetected = event?.metadata?.face_detected;
   const isPerson = event?.event_type === "person" || event?.label?.startsWith("person");
+  const isVehicle = ["car", "truck", "bus", "motorcycle", "bicycle"].includes(event?.event_type);
+
+  const [identifying, setIdentifying] = useState(false);
 
   const handleIdentify = async () => {
     setIdentifyError("");
+    setIdentifying(true);
     try {
       let targetPersonId = "";
 
       if (identifyMode === "existing") {
-        if (!selectedPersonId) { setIdentifyError("Selecciona una persona"); return; }
+        if (!selectedPersonId) { setIdentifyError("Selecciona una persona"); setIdentifying(false); return; }
         targetPersonId = selectedPersonId;
       } else {
-        if (!newName.trim()) { setIdentifyError("El nombre es obligatorio"); return; }
+        if (!newName.trim()) { setIdentifyError("El nombre es obligatorio"); setIdentifying(false); return; }
         const result = await api.post<any>("/persons", {
           name: newName.trim(),
           role: newRole,
           department: newDept,
         });
-        if (!result?.id) { setIdentifyError("Error al crear persona"); return; }
+        if (!result?.id) { setIdentifyError("Error al crear persona"); setIdentifying(false); return; }
         targetPersonId = result.id;
         setPersons((prev) => [...prev, result]);
       }
 
-      // Navigate to the person's profile to upload photos
+      // Associate the face from this event with the person
+      const assocResult = await api.post<any>(`/events/${id}/associate-person`, {
+        person_id: targetPersonId,
+      });
+
+      if (assocResult?.face_detected) {
+        // Success: face was detected and embedding saved
+        setShowIdentify(false);
+        // Refresh event data to show updated identification
+        const updatedEvent = await api.get(`/events/${id}`);
+        if (updatedEvent) setEvent(updatedEvent);
+        alert(`Rostro asociado exitosamente a ${assocResult.person_name}. El sistema lo reconocerá automáticamente en el futuro.`);
+      } else {
+        // Photo saved but no face detected — still navigate to profile for manual upload
+        setShowIdentify(false);
+        alert(`Foto guardada para ${assocResult?.person_name || "la persona"}, pero no se detectó un rostro claro. Sube fotos adicionales en el perfil.`);
+      }
+
       router.push(`/dashboard/database/${targetPersonId}`);
     } catch (e: any) {
-      setIdentifyError(e?.message || "Error");
+      setIdentifyError(e?.message || "Error al asociar el rostro");
+    } finally {
+      setIdentifying(false);
     }
   };
 
@@ -216,13 +239,38 @@ export default function EventDetailPage() {
                       <div className="text-center p-2 bg-gray-50 rounded-lg">
                         <p className="text-xs text-gray-500 mb-1">Cabeza</p>
                         <p className="font-medium capitalize">
-                          {event.metadata.headgear === "none" ? "Sin accesorio" :
-                           event.metadata.headgear === "hat" ? "Gorra/Sombrero" :
-                           event.metadata.headgear === "helmet" ? "Casco" :
+                          {event.metadata.headgear === "ninguno" ? "Sin accesorio" :
+                           event.metadata.headgear === "none" ? "Sin accesorio" :
                            event.metadata.headgear}
                         </p>
                       </div>
                     )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Vehicle Attributes */}
+            {isVehicle && event.metadata && event.metadata.vehicle_color && (
+              <Card className="border-blue-200 bg-blue-50/30">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Car className="h-4 w-4" />
+                    Atributos del Vehículo
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="text-center p-2 bg-white rounded-lg">
+                      <p className="text-xs text-gray-500 mb-1">Color</p>
+                      <p className="font-medium capitalize">{event.metadata.vehicle_color}</p>
+                    </div>
+                    <div className="text-center p-2 bg-white rounded-lg">
+                      <p className="text-xs text-gray-500 mb-1">Estado</p>
+                      <p className="font-medium">
+                        {event.metadata.vehicle_moving ? "En movimiento" : "Estacionado"}
+                      </p>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -278,7 +326,7 @@ export default function EventDetailPage() {
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
-                  <p className="text-xs text-gray-400 mt-1">Te llevará al perfil para subir fotos de reconocimiento.</p>
+                  <p className="text-xs text-gray-400 mt-1">El rostro de este evento se asociará automáticamente con la persona seleccionada.</p>
                 </div>
               ) : (
                 <>
@@ -304,10 +352,19 @@ export default function EventDetailPage() {
               )}
             </div>
             <div className="flex items-center justify-end gap-3 p-5 border-t border-gray-200">
-              <Button variant="outline" onClick={() => { setShowIdentify(false); setIdentifyError(""); }}>Cancelar</Button>
-              <Button onClick={handleIdentify}>
-                <UserPlus className="h-4 w-4 mr-1" />
-                {identifyMode === "existing" ? "Ir al Perfil" : "Crear y Abrir Perfil"}
+              <Button variant="outline" onClick={() => { setShowIdentify(false); setIdentifyError(""); }} disabled={identifying}>Cancelar</Button>
+              <Button onClick={handleIdentify} disabled={identifying}>
+                {identifying ? (
+                  <span className="flex items-center gap-1">
+                    <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                    Procesando...
+                  </span>
+                ) : (
+                  <>
+                    <UserPlus className="h-4 w-4 mr-1" />
+                    {identifyMode === "existing" ? "Asociar Rostro" : "Crear y Asociar"}
+                  </>
+                )}
               </Button>
             </div>
           </div>

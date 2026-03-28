@@ -22,6 +22,8 @@ from zone_manager import ZoneManager
 from event_publisher import EventPublisher
 from face_recognizer import FaceRecognizer
 from person_attributes import extract_person_attributes
+from vehicle_attributes import extract_vehicle_attributes
+from best_shot import BestShotSelector
 
 structlog.configure(
     processors=[
@@ -171,6 +173,12 @@ class DetectorService:
         """Main detection loop for a single camera."""
         grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url)
         tracker = ObjectTracker()
+        best_shot = BestShotSelector(
+            min_bbox_area=15000,       # ~150x100 px
+            min_person_height=150,     # Person at least 150px tall
+            accumulation_window=5.0,   # Wait 5 seconds for best shot
+            shrink_threshold=5,        # Publish when object starts leaving
+        )
 
         # Load zones for this camera
         zones = await zone_manager.get_zones(camera_id)
@@ -207,19 +215,32 @@ class DetectorService:
                 # Filter by zones
                 filtered = zone_manager.filter_detections(tracked, zones)
 
-                # Person attribute extraction + face recognition
+                # Attribute extraction + face recognition
                 frame_count += 1
                 run_face = (frame_count % face_every_n == 0) and face_recognizer.available
                 for det in filtered:
-                    # Extract clothing colors and headgear for all persons
-                    if det.label == "person" or det.label.startswith("person:"):
+                    base_label = det.label.split(":")[0]
+
+                    # Extract clothing colors and headgear for persons
+                    if base_label == "person":
                         try:
                             attrs = extract_person_attributes(frame, det.bbox)
-                            if not hasattr(det, "metadata") or det.metadata is None:
+                            if det.metadata is None:
                                 det.metadata = {}
                             det.metadata["upper_color"] = attrs["upper_color"]
                             det.metadata["lower_color"] = attrs["lower_color"]
                             det.metadata["headgear"] = attrs["headgear"]
+                        except Exception:
+                            pass
+
+                    # Extract vehicle color
+                    if base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
+                        try:
+                            vattrs = extract_vehicle_attributes(frame, det.bbox)
+                            if det.metadata is None:
+                                det.metadata = {}
+                            det.metadata["vehicle_color"] = vattrs["vehicle_color"]
+                            det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
                         except Exception:
                             pass
 
@@ -233,7 +254,7 @@ class DetectorService:
                             match = await face_recognizer.recognize(frame, det.bbox)
                             if match:
                                 # Attach person info to detection metadata
-                                if not hasattr(det, "metadata") or det.metadata is None:
+                                if det.metadata is None:
                                     det.metadata = {}
                                 det.metadata["person_id"] = match.person_id
                                 det.metadata["person_name"] = match.person_name
@@ -253,7 +274,7 @@ class DetectorService:
                                     face_locations, encodings = result
                                     if encodings:
                                         # Mark that a face was detected (triggers event alert)
-                                        if not hasattr(det, "metadata") or det.metadata is None:
+                                        if det.metadata is None:
                                             det.metadata = {}
                                         det.metadata["face_detected"] = True
                                         if face_locations:
@@ -301,13 +322,15 @@ class DetectorService:
                                     "w": round((x2 - x1) / w * 100, 1),
                                     "h": round((y2 - y1) * 0.4 / h * 100, 1),
                                 }
-                        # Extract person attributes (clothing colors, headgear)
-                        if d.label.startswith("person"):
-                            try:
-                                attrs = extract_person_attributes(frame, d.bbox)
+                        # Include attributes already computed
+                        if hasattr(d, "metadata") and d.metadata:
+                            attrs = {}
+                            for attr_key in ("upper_color", "lower_color", "headgear",
+                                             "vehicle_color", "vehicle_rgb"):
+                                if attr_key in d.metadata:
+                                    attrs[attr_key] = d.metadata[attr_key]
+                            if attrs:
                                 track["attributes"] = attrs
-                            except Exception:
-                                pass
                         tracks.append(track)
 
                     import json as _json
@@ -319,19 +342,68 @@ class DetectorService:
                         }),
                     )
 
-                # Publish individual events ONLY when face was detected
-                # (either recognized person or unknown face saved)
+                # ── BEST-SHOT EVENT PUBLISHING ──────────────────────────
+                # Rules:
+                #   PERSONS  → Best-Shot: wait, accumulate, pick best frame with face
+                #   VEHICLES → ONLY publish if crossing a zone. Parked cars = NO event.
+                #   ANIMALS  → Best-Shot with simpler criteria
+                #
+                # This completely eliminates parked-car spam.
+                best_shot.cleanup()
+
+                VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
+
                 for det in filtered:
-                    has_face = (
-                        hasattr(det, "metadata") and det.metadata
-                        and (det.metadata.get("person_name") or det.metadata.get("face_detected"))
-                    )
-                    if has_face or not det.label.startswith("person"):
+                    base_label = det.label.split(":")[0]
+                    metadata = det.metadata or {}
+
+                    # ── VEHICLES: Only zone-crossing events ──
+                    if base_label in VEHICLE_LABELS:
+                        # Only publish if this vehicle triggered a zone crossing
+                        has_zone = metadata.get("zone_id") is not None
+                        if not has_zone:
+                            continue  # Skip: parked/passing vehicle without zone = NO event
+                        # Zone crossing vehicle → publish immediately (already filtered by zones)
                         await publisher.publish(
                             camera_id=camera_id,
                             camera_name=camera_name,
                             detection=det,
                             frame=frame,
+                        )
+                        continue
+
+                    # ── PERSONS: Best-shot accumulation ──
+                    best = best_shot.add_candidate(
+                        camera_id=camera_id,
+                        tracker_id=det.tracker_id,
+                        label=det.label,
+                        frame=frame,
+                        bbox=det.bbox,
+                        confidence=det.confidence,
+                        metadata=metadata,
+                    )
+
+                    if best is not None:
+                        from tracker import TrackedDetection as TD
+                        best_det = TD(
+                            bbox=best.bbox,
+                            label=det.label if best.person_name is None else f"person:{best.person_name}",
+                            confidence=best.confidence,
+                            class_id=det.class_id,
+                            tracker_id=det.tracker_id,
+                            is_new=True,
+                            metadata=best.metadata,
+                        )
+
+                        # Persons: only publish if face was detected
+                        if base_label == "person" and not best.face_detected:
+                            continue
+
+                        await publisher.publish(
+                            camera_id=camera_id,
+                            camera_name=camera_name,
+                            detection=best_det,
+                            frame=best.frame,
                         )
 
                 # Publish person_count summary when multiple persons detected

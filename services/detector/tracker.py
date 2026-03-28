@@ -15,6 +15,7 @@ log = structlog.get_logger()
 class TrackedDetection(Detection):
     tracker_id: int = -1
     is_new: bool = False
+    metadata: dict | None = None
 
 
 class ObjectTracker:

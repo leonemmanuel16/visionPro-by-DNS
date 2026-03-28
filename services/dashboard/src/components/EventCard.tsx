@@ -20,6 +20,8 @@ interface EventCardProps {
     upper_color?: string;
     lower_color?: string;
     headgear?: string;
+    vehicle_color?: string;
+    vehicle_moving?: boolean;
   };
 }
 
@@ -32,6 +34,8 @@ const typeColors: Record<string, "default" | "warning" | "destructive" | "succes
   animal: "success",
 };
 
+const VEHICLE_TYPES = new Set(["car", "truck", "bus", "motorcycle", "bicycle"]);
+
 export function EventCard({
   id,
   camera_name,
@@ -43,7 +47,9 @@ export function EventCard({
   metadata,
 }: EventCardProps) {
   const personName = metadata?.person_name;
-  const hasAttributes = metadata?.upper_color || metadata?.lower_color || metadata?.headgear;
+  const isVehicle = VEHICLE_TYPES.has(event_type);
+  const hasPersonAttrs = metadata?.upper_color || metadata?.lower_color || metadata?.headgear;
+  const hasVehicleAttrs = metadata?.vehicle_color;
 
   return (
     <Link href={`/dashboard/events/${id}`}>
@@ -86,6 +92,18 @@ export function EventCard({
                 Desconocido
               </Badge>
             )}
+            {/* Vehicle color badge */}
+            {isVehicle && hasVehicleAttrs && (
+              <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded text-blue-700 capitalize">
+                {metadata!.vehicle_color}
+              </span>
+            )}
+            {/* Vehicle motion indicator */}
+            {isVehicle && metadata?.vehicle_moving && (
+              <span className="text-[10px] px-1.5 py-0.5 bg-green-50 border border-green-200 rounded text-green-700">
+                En movimiento
+              </span>
+            )}
             {confidence && (
               <span className="text-xs text-gray-500">
                 {(confidence * 100).toFixed(0)}%
@@ -94,16 +112,16 @@ export function EventCard({
           </div>
           <div className="flex items-center gap-2 mt-1">
             <p className="text-sm text-gray-700 truncate">{camera_name}</p>
-            {hasAttributes && (
+            {hasPersonAttrs && (
               <div className="flex items-center gap-1">
                 {metadata?.upper_color && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-                    👕 {metadata.upper_color}
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 capitalize">
+                    Camisa {metadata.upper_color}
                   </span>
                 )}
-                {metadata?.headgear && metadata.headgear !== "none" && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-                    🧢 {metadata.headgear}
+                {metadata?.headgear && metadata.headgear !== "ninguno" && metadata.headgear !== "none" && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 capitalize">
+                    {metadata.headgear}
                   </span>
                 )}
               </div>

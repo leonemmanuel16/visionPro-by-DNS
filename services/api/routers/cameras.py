@@ -1,8 +1,10 @@
 """Camera routes."""
 
 import json
+import logging
 from uuid import UUID
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +22,15 @@ from services.camera_service import (
     update_camera,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/cameras", tags=["cameras"])
+
+# go2rtc runs on the host network — from within Docker, use host.docker.internal or localhost
+GO2RTC_API = "http://go2rtc:1984"  # Docker service name won't work with host networking
+# Since API is NOT on host network, we need to reach go2rtc on host port
+# go2rtc uses network_mode: host, so we reach it at the Docker host IP
+GO2RTC_INTERNAL = "http://host.docker.internal:1984"
 
 
 async def _get_redis() -> aioredis.Redis:
@@ -40,6 +50,44 @@ async def _publish_camera_event(event_type: str, camera_id: str, ip_address: str
         await r.close()
     except Exception:
         pass  # Don't fail the API call if Redis is down
+
+
+async def _register_streams_in_go2rtc(camera_id: str, rtsp_main: str, rtsp_sub: str | None = None) -> None:
+    """Directly register camera streams in go2rtc via its REST API.
+
+    This is a fallback to ensure streams are available even if camera-manager
+    hasn't regenerated yet.
+    """
+    cam_id = camera_id.replace("-", "")[:12]
+    safe_name = f"cam_{cam_id}"
+
+    streams_to_add = {}
+    if rtsp_main:
+        streams_to_add[safe_name] = rtsp_main
+        streams_to_add[f"{safe_name}_h264"] = f"ffmpeg:{safe_name}#video=h264#audio=opus"
+    if rtsp_sub and rtsp_sub != rtsp_main:
+        streams_to_add[f"{safe_name}_sub"] = rtsp_sub
+        streams_to_add[f"{safe_name}_sub_h264"] = f"ffmpeg:{safe_name}_sub#video=h264#audio=opus"
+
+    # Try multiple go2rtc URLs (host.docker.internal for macOS/Windows, localhost for Linux host network)
+    go2rtc_urls = [GO2RTC_INTERNAL, "http://localhost:1984"]
+
+    for base_url in go2rtc_urls:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                for name, src in streams_to_add.items():
+                    resp = await client.put(
+                        f"{base_url}/api/streams",
+                        params={"name": name, "src": src},
+                    )
+                    logger.info(f"go2rtc stream registered: {name} -> {resp.status_code}")
+                logger.info(f"All streams registered via {base_url}")
+                return  # Success, no need to try other URLs
+        except Exception as e:
+            logger.warning(f"Failed to register streams via {base_url}: {e}")
+            continue
+
+    logger.warning("Could not register streams in go2rtc via any URL")
 
 
 def _generate_hikvision_rtsp(ip: str, username: str, password: str) -> tuple[str, str]:
@@ -102,6 +150,13 @@ async def add_camera(
         "camera_discovered",
         str(camera.id),
         cam_data["ip_address"],
+    )
+
+    # Also directly register streams in go2rtc (fallback if camera-manager is slow)
+    await _register_streams_in_go2rtc(
+        str(camera.id),
+        rtsp_main,
+        rtsp_sub,
     )
 
     return camera
@@ -238,6 +293,25 @@ async def probe_onvif(
             "error": str(e),
             "message": f"No se pudo conectar a {ip}:{port} por ONVIF. Verifica IP, puerto, usuario y contraseña.",
         }
+
+
+@router.post("/refresh-streams", status_code=200)
+async def refresh_streams(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Re-register all camera streams in go2rtc. Use when streams are missing."""
+    cameras_list = await get_cameras(db, is_enabled=True)
+    registered = 0
+    for cam in cameras_list:
+        if cam.rtsp_main_stream:
+            await _register_streams_in_go2rtc(
+                str(cam.id),
+                cam.rtsp_main_stream,
+                cam.rtsp_sub_stream,
+            )
+            registered += 1
+    return {"message": f"Registered {registered} cameras in go2rtc"}
 
 
 @router.post("/discover", status_code=202)
