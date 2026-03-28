@@ -98,6 +98,44 @@ async def list_persons(
     return response
 
 
+@router.get("/persons/{person_id}", response_model=PersonResponse)
+async def get_person(
+    person_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from sqlalchemy import text
+
+    pid = uuid.UUID(person_id)
+    result = await db.execute(select(Person).where(Person.id == pid))
+    person = result.scalar_one_or_none()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    # Get photo count
+    photo_count = 0
+    try:
+        count_result = await db.execute(
+            text("SELECT COUNT(*) FROM face_embeddings WHERE person_id = :pid"),
+            {"pid": pid},
+        )
+        photo_count = count_result.scalar() or 0
+    except Exception:
+        pass
+
+    return PersonResponse(
+        id=str(person.id),
+        name=person.name,
+        role=person.role,
+        department=person.department,
+        notes=person.notes,
+        is_active=person.is_active,
+        photo_count=photo_count,
+        created_at=person.created_at,
+        updated_at=person.updated_at,
+    )
+
+
 @router.post("/persons", response_model=PersonResponse, status_code=201)
 async def create_person(
     data: PersonCreate,
@@ -294,6 +332,72 @@ async def list_photos(
         }
         for row in rows.all()
     ]
+
+
+@router.delete("/persons/{person_id}/photos/{photo_id}", status_code=204)
+async def delete_photo(
+    person_id: str,
+    photo_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Delete an individual face embedding/photo."""
+    from sqlalchemy import text
+
+    pid = uuid.UUID(person_id)
+    phid = uuid.UUID(photo_id)
+
+    result = await db.execute(
+        text("SELECT id FROM face_embeddings WHERE id = :photo_id AND person_id = :person_id"),
+        {"photo_id": phid, "person_id": pid},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    await db.execute(
+        text("DELETE FROM face_embeddings WHERE id = :photo_id AND person_id = :person_id"),
+        {"photo_id": phid, "person_id": pid},
+    )
+    await db.commit()
+
+
+@router.get("/persons/{person_id}/photos/{photo_id}/image")
+async def get_photo_image(
+    person_id: str,
+    photo_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the photo image of a face embedding from MinIO."""
+    from fastapi.responses import Response
+    from sqlalchemy import text
+
+    pid = uuid.UUID(person_id)
+    phid = uuid.UUID(photo_id)
+
+    result = await db.execute(
+        text("SELECT photo_path FROM face_embeddings WHERE id = :photo_id AND person_id = :person_id"),
+        {"photo_id": phid, "person_id": pid},
+    )
+    row = result.first()
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    photo_path = row[0]
+    # photo_path format: "bucket/object/path.jpg" e.g. "snapshots/faces/pid/photo.jpg"
+    parts = photo_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=404, detail="Invalid photo path")
+
+    bucket, object_name = parts[0], parts[1]
+    try:
+        minio = get_minio_client()
+        data = minio.get_object(bucket, object_name)
+        content = data.read()
+        data.close()
+        data.release_conn()
+        return Response(content=content, media_type="image/jpeg")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Photo not available: {str(e)}")
 
 
 # --- Unknown Faces ---

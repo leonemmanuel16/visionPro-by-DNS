@@ -236,6 +236,13 @@ class DetectorService:
                                 det.metadata["person_name"] = match.person_name
                                 det.metadata["face_confidence"] = f"{match.confidence:.2f}"
                                 det.label = f"person:{match.person_name}"
+                                # Get face location for bounding box overlay
+                                face_result = face_recognizer.detect_and_encode(frame, det.bbox)
+                                if face_result:
+                                    face_locs, _ = face_result
+                                    if face_locs:
+                                        det.metadata["face_bbox"] = face_locs[0]
+                                        det.metadata["face_detected"] = True
                             else:
                                 # Try to save unknown face with thumbnail
                                 result = face_recognizer.detect_and_encode(frame, det.bbox)
@@ -246,6 +253,8 @@ class DetectorService:
                                         if not hasattr(det, "metadata") or det.metadata is None:
                                             det.metadata = {}
                                         det.metadata["face_detected"] = True
+                                        if face_locations:
+                                            det.metadata["face_bbox"] = face_locations[0]
                                         face_loc = face_locations[0] if face_locations else None
                                         await face_recognizer.save_unknown_face(
                                             encoding=encodings[0],
@@ -280,6 +289,15 @@ class DetectorService:
                             pname = d.metadata.get("person_name")
                             if pname:
                                 track["personName"] = pname
+                            if d.metadata.get("face_bbox"):
+                                ft, fr, fb, fl = d.metadata["face_bbox"]
+                                # Approximate face bbox as upper 40% of person bounding box
+                                track["faceBbox"] = {
+                                    "x": round(x1 / w * 100, 1),
+                                    "y": round(y1 / h * 100, 1),
+                                    "w": round((x2 - x1) / w * 100, 1),
+                                    "h": round((y2 - y1) * 0.4 / h * 100, 1),
+                                }
                         # Extract person attributes (clothing colors, headgear)
                         if d.label.startswith("person"):
                             try:

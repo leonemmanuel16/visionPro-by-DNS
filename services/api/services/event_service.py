@@ -17,6 +17,7 @@ async def get_events(
     to_date: datetime | None = None,
     page: int = 1,
     per_page: int = 50,
+    person_name: str | None = None,
 ) -> tuple[list[Event], int]:
     query = select(Event).order_by(Event.occurred_at.desc())
     count_query = select(func.count(Event.id))
@@ -33,6 +34,9 @@ async def get_events(
     if to_date:
         query = query.where(Event.occurred_at <= to_date)
         count_query = count_query.where(Event.occurred_at <= to_date)
+    if person_name:
+        query = query.where(Event.event_metadata['person_name'].astext == person_name)
+        count_query = count_query.where(Event.event_metadata['person_name'].astext == person_name)
 
     # Pagination
     offset = (page - 1) * per_page

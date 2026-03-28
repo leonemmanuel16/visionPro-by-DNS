@@ -21,6 +21,7 @@ router = APIRouter(prefix="/events", tags=["events"])
 async def list_events(
     camera_id: UUID | None = None,
     event_type: str | None = None,
+    person_name: str | None = None,
     from_date: datetime | None = Query(None, alias="from"),
     to_date: datetime | None = Query(None, alias="to"),
     page: int = Query(1, ge=1),
@@ -29,7 +30,8 @@ async def list_events(
     user: User = Depends(get_current_user),
 ):
     events, total = await get_events(
-        db, camera_id, event_type, from_date, to_date, page, per_page
+        db, camera_id, event_type, from_date, to_date, page, per_page,
+        person_name=person_name,
     )
     return events
 

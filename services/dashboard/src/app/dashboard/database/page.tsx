@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,7 @@ interface UnknownFace {
 // No demo data — all unknown faces loaded from API
 
 export default function DatabasePage() {
+  const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
   const [unknownFaces, setUnknownFaces] = useState<UnknownFace[]>([]);
   const [activeTab, setActiveTab] = useState<"known" | "unknown">("known");
@@ -484,8 +486,11 @@ export default function DatabasePage() {
                 {filteredPeople.map((person) => (
                   <tr key={person.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-sm font-bold text-blue-600">
+                      <div
+                        className="flex items-center gap-3 cursor-pointer group"
+                        onClick={() => router.push(`/dashboard/database/${person.id}`)}
+                      >
+                        <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-sm font-bold text-blue-600 group-hover:bg-blue-200 transition-colors">
                           {person.name
                             .split(" ")
                             .map((n) => n[0])
@@ -493,7 +498,7 @@ export default function DatabasePage() {
                             .slice(0, 2)}
                         </div>
                         <div>
-                          <p className="text-sm font-medium text-gray-900">{person.name}</p>
+                          <p className="text-sm font-medium text-gray-900 group-hover:text-blue-600 transition-colors">{person.name}</p>
                           <p className="text-xs text-gray-500">Registrado: {person.created_at}</p>
                         </div>
                       </div>
