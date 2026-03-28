@@ -117,10 +117,13 @@ class DetectorService:
             self._refresh_loop(detector, publisher, zone_manager, face_recognizer)
         )
 
+        # Periodic database cleanup (events, expired faces)
+        cleanup_task = asyncio.create_task(self._cleanup_loop())
+
         log.info("detector.started")
 
         try:
-            await asyncio.gather(listener_task, refresh_task)
+            await asyncio.gather(listener_task, refresh_task, cleanup_task)
         except asyncio.CancelledError:
             log.info("detector.shutting_down")
 
@@ -392,6 +395,56 @@ class DetectorService:
             except Exception as e:
                 log.warning("detector.event_listener_error", error=str(e))
                 await asyncio.sleep(5)
+
+    async def _cleanup_loop(self):
+        """Periodically clean up old events and expired face data.
+
+        Retention policy:
+        - Events: keep 90 days or max 10,000 events (whichever is reached first)
+        - Unknown faces: delete expired (>30 days)
+        - Dismissed faces: delete expired (>90 days)
+        """
+        while self.running:
+            await asyncio.sleep(3600)  # Run every hour
+            try:
+                async with self.db_pool.acquire() as conn:
+                    # 1. Delete events older than 90 days
+                    deleted_old = await conn.execute(
+                        "DELETE FROM events WHERE occurred_at < NOW() - INTERVAL '90 days'"
+                    )
+
+                    # 2. If more than 10,000 events, keep only the newest 10,000
+                    total = await conn.fetchval("SELECT COUNT(*) FROM events")
+                    deleted_excess = 0
+                    if total and total > 10000:
+                        await conn.execute("""
+                            DELETE FROM events WHERE id IN (
+                                SELECT id FROM events
+                                ORDER BY occurred_at DESC
+                                OFFSET 10000
+                            )
+                        """)
+                        deleted_excess = total - 10000
+
+                    # 3. Delete expired unknown faces
+                    deleted_unknown = await conn.execute(
+                        "DELETE FROM unknown_faces WHERE expires_at < NOW()"
+                    )
+
+                    # 4. Delete expired dismissed faces
+                    deleted_dismissed = await conn.execute(
+                        "DELETE FROM dismissed_faces WHERE expires_at < NOW()"
+                    )
+
+                    log.info(
+                        "detector.cleanup_done",
+                        events_old=str(deleted_old).split()[-1] if deleted_old else "0",
+                        events_excess=deleted_excess,
+                        unknown_faces=str(deleted_unknown).split()[-1] if deleted_unknown else "0",
+                        dismissed_faces=str(deleted_dismissed).split()[-1] if deleted_dismissed else "0",
+                    )
+            except Exception as e:
+                log.warning("detector.cleanup_error", error=str(e))
 
     async def _refresh_loop(self, detector, publisher, zone_manager, face_recognizer):
         """Periodically refresh camera list and zones."""
