@@ -152,5 +152,7 @@ class YOLODetector:
         elapsed = (time.monotonic() - start) * 1000
         if detections:
             log.debug("detector.inference", count=len(detections), ms=f"{elapsed:.1f}")
+        else:
+            log.debug("detector.no_detections", ms=f"{elapsed:.1f}")
 
         return detections

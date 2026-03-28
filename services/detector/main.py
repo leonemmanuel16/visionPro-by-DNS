@@ -183,8 +183,11 @@ class DetectorService:
                 frame = await loop.run_in_executor(self.thread_pool, grabber.grab_frame)
 
                 if frame is None:
+                    log.debug("detector.frame_none", camera=camera_name)
                     await asyncio.sleep(1)
                     continue
+
+                log.debug("detector.frame_ok", camera=camera_name, shape=f"{frame.shape[1]}x{frame.shape[0]}")
 
                 # Run detection in thread pool (CPU/GPU bound)
                 detections = await loop.run_in_executor(
