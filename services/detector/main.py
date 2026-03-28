@@ -174,10 +174,11 @@ class DetectorService:
         grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url)
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
-            min_bbox_area=15000,       # ~150x100 px
-            min_person_height=150,     # Person at least 150px tall
-            accumulation_window=5.0,   # Wait 5 seconds for best shot
-            shrink_threshold=5,        # Publish when object starts leaving
+            min_bbox_area=12000,       # ~120x100 px minimum
+            min_person_height=120,     # Person at least 120px tall
+            max_hold_time=8.0,         # Max 8 seconds before forced publish
+            gone_frames=15,            # Object gone for 15 frames → publish
+            confidence_threshold=0.5,  # Minimum 50% confidence
         )
 
         # Load zones for this camera
@@ -346,53 +347,52 @@ class DetectorService:
                         }),
                     )
 
-                # ── BEST-SHOT EVENT PUBLISHING ──────────────────────────
-                # Rules:
-                #   PERSONS  → Best-Shot: wait, accumulate, pick best frame with face
-                #   VEHICLES → Best-Shot: ONE alert per vehicle, pick best frame
-                #              (with plate/color/type), then NEVER repeat for same spot
-                #   ANIMALS  → Best-Shot with simpler criteria
+                # ── BEST-SHOT: Feed all detections, publish nothing yet ──
+                # Step 1: Feed every detection to the accumulator
                 best_shot.cleanup()
-
-                VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
+                current_tracker_ids = set()
 
                 for det in filtered:
-                    base_label = det.label.split(":")[0]
-                    metadata = det.metadata or {}
-
-                    # All detections go through Best-Shot accumulator
-                    best = best_shot.add_candidate(
+                    current_tracker_ids.add(det.tracker_id)
+                    best_shot.update(
                         camera_id=camera_id,
                         tracker_id=det.tracker_id,
                         label=det.label,
+                        class_id=det.class_id,
                         frame=frame,
                         bbox=det.bbox,
                         confidence=det.confidence,
-                        metadata=metadata,
+                        metadata=det.metadata or {},
                     )
 
-                    if best is not None:
-                        from tracker import TrackedDetection as TD
-                        best_det = TD(
-                            bbox=best.bbox,
-                            label=det.label if best.person_name is None else f"person:{best.person_name}",
-                            confidence=best.confidence,
-                            class_id=det.class_id,
-                            tracker_id=det.tracker_id,
-                            is_new=True,
-                            metadata=best.metadata,
-                        )
+                # Step 2: Collect ready events (objects that left or timed out)
+                # This is where the ONE alert per object is published
+                from tracker import TrackedDetection as TD
+                ready_events = best_shot.collect(camera_id, current_tracker_ids)
 
-                        # Persons: only publish if face was detected
-                        if base_label == "person" and not best.face_detected:
-                            continue
+                for buf, candidate in ready_events:
+                    base_label = buf.label.split(":")[0]
 
-                        await publisher.publish(
-                            camera_id=camera_id,
-                            camera_name=camera_name,
-                            detection=best_det,
-                            frame=best.frame,
-                        )
+                    # Persons: only publish if face was detected
+                    if base_label == "person" and not candidate.metadata.get("face_detected"):
+                        continue
+
+                    best_det = TD(
+                        bbox=candidate.bbox,
+                        label=buf.label,
+                        confidence=candidate.confidence,
+                        class_id=buf.class_id,
+                        tracker_id=buf.tracker_id,
+                        is_new=True,
+                        metadata=candidate.metadata,
+                    )
+
+                    await publisher.publish(
+                        camera_id=camera_id,
+                        camera_name=camera_name,
+                        detection=best_det,
+                        frame=candidate.frame,
+                    )
 
                 # Publish person_count summary when multiple persons detected
                 person_dets = [d for d in filtered if d.label.startswith("person")]
