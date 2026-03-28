@@ -13,6 +13,14 @@ interface EventCardProps {
   confidence?: number;
   occurred_at: string;
   thumbnail_path?: string;
+  metadata?: {
+    person_name?: string;
+    person_id?: string;
+    face_detected?: boolean;
+    upper_color?: string;
+    lower_color?: string;
+    headgear?: string;
+  };
 }
 
 const typeColors: Record<string, "default" | "warning" | "destructive" | "success"> = {
@@ -32,7 +40,11 @@ export function EventCard({
   confidence,
   occurred_at,
   thumbnail_path,
+  metadata,
 }: EventCardProps) {
+  const personName = metadata?.person_name;
+  const hasAttributes = metadata?.upper_color || metadata?.lower_color || metadata?.headgear;
+
   return (
     <Link href={`/dashboard/events/${id}`}>
       <div className="flex items-center gap-4 rounded-lg border border-gray-200 bg-white p-3 hover:border-blue-400 transition-colors">
@@ -44,7 +56,6 @@ export function EventCard({
               alt={label || event_type}
               className="h-full w-full object-cover"
               onError={(e) => {
-                // Fallback: try snapshot if thumbnail fails
                 const img = e.target as HTMLImageElement;
                 if (!img.dataset.retried) {
                   img.dataset.retried = "1";
@@ -61,17 +72,43 @@ export function EventCard({
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge variant={typeColors[event_type] || "default"}>
               {label || event_type}
             </Badge>
+            {personName && (
+              <Badge variant="success">
+                {personName}
+              </Badge>
+            )}
+            {!personName && metadata?.face_detected && (
+              <Badge variant="warning">
+                Desconocido
+              </Badge>
+            )}
             {confidence && (
               <span className="text-xs text-gray-500">
                 {(confidence * 100).toFixed(0)}%
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-700 truncate">{camera_name}</p>
+          <div className="flex items-center gap-2 mt-1">
+            <p className="text-sm text-gray-700 truncate">{camera_name}</p>
+            {hasAttributes && (
+              <div className="flex items-center gap-1">
+                {metadata?.upper_color && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
+                    👕 {metadata.upper_color}
+                  </span>
+                )}
+                {metadata?.headgear && metadata.headgear !== "none" && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
+                    🧢 {metadata.headgear}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <p className="text-xs text-gray-400">
             {formatDistanceToNow(new Date(occurred_at), { addSuffix: true })}
           </p>
