@@ -66,30 +66,23 @@ async def list_persons(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    from sqlalchemy import text
+
     result = await db.execute(select(Person).order_by(Person.name))
     persons = result.scalars().all()
 
+    # Get photo counts in bulk FIRST
+    counts: dict[str, int] = {}
+    try:
+        count_rows = await db.execute(
+            text("SELECT person_id, COUNT(*) as cnt FROM face_embeddings GROUP BY person_id")
+        )
+        counts = {str(row[0]): row[1] for row in count_rows.all()}
+    except Exception:
+        pass
+
     response = []
     for p in persons:
-        # Count photos
-        count_result = await db.execute(
-            select(func.count()).select_from(
-                select(func.literal(1)).where(
-                    # Raw SQL for face_embeddings count
-                ).subquery()
-            )
-        ) if False else None
-        # Simple approach: count from raw query
-        photo_count = 0
-        try:
-            raw = await db.execute(
-                select(func.count()).where(
-                    # We'll use a text query since face_embeddings isn't an ORM model
-                )
-            )
-        except Exception:
-            pass
-
         response.append(PersonResponse(
             id=str(p.id),
             name=p.name,
@@ -97,22 +90,10 @@ async def list_persons(
             department=p.department,
             notes=p.notes,
             is_active=p.is_active,
-            photo_count=0,  # Will be populated via separate query
+            photo_count=counts.get(str(p.id), 0),
             created_at=p.created_at,
             updated_at=p.updated_at,
         ))
-
-    # Get photo counts in bulk
-    try:
-        from sqlalchemy import text
-        count_rows = await db.execute(
-            text("SELECT person_id, COUNT(*) as cnt FROM face_embeddings GROUP BY person_id")
-        )
-        counts = {str(row[0]): row[1] for row in count_rows.all()}
-        for p in response:
-            p.photo_count = counts.get(p.id, 0)
-    except Exception:
-        pass
 
     return response
 
