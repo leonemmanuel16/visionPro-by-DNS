@@ -221,6 +221,11 @@ class DetectorService:
                             pass
 
                     if det.label == "person" and run_face:
+                        # Skip tiny person bboxes (likely false positives)
+                        bw = det.bbox[2] - det.bbox[0]
+                        bh = det.bbox[3] - det.bbox[1]
+                        if bw < 40 or bh < 80 or (bw * bh) < 5000:
+                            continue
                         try:
                             match = await face_recognizer.recognize(frame, det.bbox)
                             if match:

@@ -156,11 +156,27 @@ class FaceRecognizer:
             face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=1, model="hog")
             if not face_locations:
                 return None
-            face_encodings = self._fr.face_encodings(rgb_crop, known_face_locations=face_locations)
+
+            # Validate face size: reject faces that are too small or have
+            # unrealistic proportions (likely false positives)
+            valid_faces = []
+            for (top, right, bottom, left) in face_locations:
+                fw = right - left
+                fh = bottom - top
+                aspect = fh / fw if fw > 0 else 0
+                if fw >= 30 and fh >= 30 and 0.8 < aspect < 2.0:
+                    valid_faces.append((top, right, bottom, left))
+                else:
+                    log.debug("face_recognizer.face_rejected", size=f"{fw}x{fh}", aspect=f"{aspect:.2f}")
+
+            if not valid_faces:
+                return None
+
+            face_encodings = self._fr.face_encodings(rgb_crop, known_face_locations=valid_faces)
             if not face_encodings:
                 return None
-            log.info("face_recognizer.face_detected", faces=len(face_locations), method="crop")
-            return face_locations, face_encodings
+            log.info("face_recognizer.face_detected", faces=len(valid_faces), method="crop")
+            return valid_faces, face_encodings
         except Exception as e:
             log.warning("face_recognizer.detect_error", error=str(e))
             return None
