@@ -234,7 +234,7 @@ async def upload_photo(
         await db.execute(
             text("""
                 INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
-                VALUES (:id, :person_id, :embedding::vector, :photo_path, 'upload')
+                VALUES (:id, :person_id, CAST(:embedding AS vector), :photo_path, 'upload')
             """),
             {
                 "id": uuid.uuid4(),
@@ -345,7 +345,7 @@ async def identify_unknown_face(
 
     # Get unknown face embedding
     row = await db.execute(
-        text("SELECT embedding::text, thumbnail_path FROM unknown_faces WHERE id = :fid"),
+        text("SELECT CAST(embedding AS text), thumbnail_path FROM unknown_faces WHERE id = :fid"),
         {"fid": fid},
     )
     face = row.first()
@@ -353,13 +353,14 @@ async def identify_unknown_face(
         raise HTTPException(status_code=404, detail="Unknown face not found")
 
     # Move embedding to face_embeddings
+    new_id = uuid.uuid4()
     await db.execute(
         text("""
             INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
-            VALUES (:id, :person_id, :embedding::vector, :photo_path, 'detection')
+            VALUES (:id, :person_id, CAST(:embedding AS vector), :photo_path, 'detection')
         """),
         {
-            "id": uuid.uuid4(),
+            "id": new_id,
             "person_id": pid,
             "embedding": face[0],
             "photo_path": face[1],
@@ -369,6 +370,14 @@ async def identify_unknown_face(
     # Delete from unknown_faces
     await db.execute(text("DELETE FROM unknown_faces WHERE id = :fid"), {"fid": fid})
     await db.commit()
+
+    # Verify the embedding was saved
+    verify = await db.execute(
+        text("SELECT id FROM face_embeddings WHERE id = :id"),
+        {"id": new_id},
+    )
+    if not verify.first():
+        raise HTTPException(status_code=500, detail="Failed to save face embedding")
 
     return {"message": "Face identified and assigned to person"}
 
