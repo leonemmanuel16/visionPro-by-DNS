@@ -373,8 +373,11 @@ class DetectorService:
                 for buf, candidate in ready_events:
                     base_label = buf.label.split(":")[0]
 
-                    # Persons: only publish if face was detected
-                    if base_label == "person" and not candidate.metadata.get("face_detected"):
+                    # ONLY publish persons with face detected
+                    # Skip all vehicles, animals, and persons without face
+                    if base_label != "person":
+                        continue
+                    if not candidate.metadata.get("face_detected"):
                         continue
 
                     best_det = TD(
