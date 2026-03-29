@@ -10,8 +10,35 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { format } from "date-fns";
 import Link from "next/link";
-import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt, Car } from "lucide-react";
+import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt, Car, ZoomIn } from "lucide-react";
 import { getApiUrl } from "@/lib/urls";
+
+function ImageLightbox({ src, alt }: { src: string; alt: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="relative group cursor-pointer" onClick={() => setOpen(true)}>
+        <img src={src} alt={alt} className="w-full rounded-lg" />
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors rounded-lg flex items-center justify-center">
+          <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+        </div>
+      </div>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-pointer" onClick={() => setOpen(false)}>
+          <button className="absolute top-4 right-4 text-white hover:text-gray-300 z-50" onClick={() => setOpen(false)}>
+            <X className="h-8 w-8" />
+          </button>
+          <img
+            src={src}
+            alt={alt}
+            className="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
+  );
+}
 
 const ROLES = ["Empleado", "Visitante", "Guardia", "Contratista", "Proveedor", "VIP", "Restringido"];
 const DEPARTMENTS = ["Sistemas", "Administración", "Seguridad", "Ingeniería", "Ventas", "Recursos Humanos", "Dirección", "Externo"];
@@ -114,10 +141,9 @@ export default function EventDetailPage() {
           <Card>
             <CardContent className="p-2">
               {event.snapshot_path ? (
-                <img
+                <ImageLightbox
                   src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
                   alt="Event snapshot"
-                  className="w-full rounded-lg"
                 />
               ) : (
                 <div className="flex h-64 items-center justify-center rounded-lg bg-gray-100 text-gray-400">
