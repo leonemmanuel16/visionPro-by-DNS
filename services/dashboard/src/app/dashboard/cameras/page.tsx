@@ -139,7 +139,8 @@ export default function CamerasPage() {
 
   const loadCameras = async () => {
     try {
-      const data = await api.get<Camera[]>("/cameras");
+      const raw = await api.get<Camera[]>("/cameras");
+      const data = Array.isArray(raw) ? raw : [];
       const customCams = getCustomCameras();
       const deletedIds = getDeletedIds();
 

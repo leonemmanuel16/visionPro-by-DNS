@@ -42,9 +42,12 @@ class ApiClient {
       if (typeof window !== "undefined") {
         localStorage.removeItem("access_token");
         localStorage.removeItem("refresh_token");
-        window.location.href = "/login";
+        // Only redirect if not already on login page
+        if (!window.location.pathname.includes("/login")) {
+          window.location.href = "/login";
+        }
       }
-      throw new Error("Unauthorized");
+      return [] as unknown as T;
     }
 
     if (!res.ok) {
