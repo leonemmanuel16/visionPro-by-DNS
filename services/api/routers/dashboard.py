@@ -81,6 +81,7 @@ async def recent_events(
             "snapshot_path": e.snapshot_path,
             "thumbnail_path": e.thumbnail_path,
             "occurred_at": e.occurred_at.isoformat(),
+            "metadata": e.metadata if hasattr(e, "metadata") else {},
         }
         for e in events
     ]

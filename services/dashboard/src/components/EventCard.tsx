@@ -58,24 +58,21 @@ export function EventCard({
       <div className="flex items-center gap-4 rounded-lg border border-gray-200 bg-white p-3 hover:border-blue-400 transition-colors">
         {/* Thumbnail */}
         <div className="h-16 w-24 flex-shrink-0 rounded bg-gray-100 overflow-hidden">
-          {thumbnail_path ? (
-            <img
-              src={`${getApiUrl()}/api/v1/events/${id}/thumbnail`}
-              alt={label || event_type}
-              className="h-full w-full object-cover"
-              onError={(e) => {
-                const img = e.target as HTMLImageElement;
-                if (!img.dataset.retried) {
-                  img.dataset.retried = "1";
-                  img.src = `${getApiUrl()}/api/v1/events/${id}/snapshot`;
-                }
-              }}
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-gray-400 text-xs">
-              No image
-            </div>
-          )}
+          <img
+            src={thumbnail_path ? `${getApiUrl()}/api/v1/events/${id}/thumbnail` : `${getApiUrl()}/api/v1/events/${id}/snapshot`}
+            alt={label || event_type}
+            className="h-full w-full object-cover"
+            onError={(e) => {
+              const img = e.target as HTMLImageElement;
+              if (!img.dataset.retried) {
+                img.dataset.retried = "1";
+                img.src = `${getApiUrl()}/api/v1/events/${id}/snapshot`;
+              } else if (!img.dataset.retried2) {
+                img.dataset.retried2 = "1";
+                img.style.display = "none";
+              }
+            }}
+          />
         </div>
 
         {/* Info */}

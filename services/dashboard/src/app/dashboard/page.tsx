@@ -33,6 +33,7 @@ interface RecentEvent {
   snapshot_path: string;
   thumbnail_path: string;
   occurred_at: string;
+  metadata?: Record<string, any>;
 }
 
 interface ActivityPoint {
