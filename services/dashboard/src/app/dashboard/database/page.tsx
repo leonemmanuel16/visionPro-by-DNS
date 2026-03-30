@@ -25,6 +25,7 @@ import {
   HelpCircle,
   Clock,
   Eye,
+  ZoomIn,
 } from "lucide-react";
 
 interface Person {
@@ -79,6 +80,7 @@ export default function DatabasePage() {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showIdentifyModal, setShowIdentifyModal] = useState(false);
   const [selectedUnknown, setSelectedUnknown] = useState<UnknownFace | null>(null);
+  const [snapshotFaceId, setSnapshotFaceId] = useState<string | null>(null);
   const [identifyMode, setIdentifyMode] = useState<"existing" | "new">("existing");
   const [identifyPersonId, setIdentifyPersonId] = useState("");
   const [identifyName, setIdentifyName] = useState("");
@@ -594,17 +596,25 @@ export default function DatabasePage() {
                       className="border border-gray-200 rounded-lg overflow-hidden hover:border-blue-300 transition-colors"
                     >
                       {/* Face thumbnail */}
-                      <div className={`aspect-square ${face.thumbnailColor} flex items-center justify-center relative`}>
+                      <div className={`aspect-square ${face.thumbnailColor} flex items-center justify-center relative group`}>
                         {face.thumbnailPath ? (
-                          <img
-                            src={`${getApiUrl()}/api/v1/unknown-faces/${face.id}/thumbnail`}
-                            alt="Rostro desconocido"
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              // Hide image on error, show fallback icon
-                              (e.target as HTMLImageElement).style.display = "none";
-                            }}
-                          />
+                          <>
+                            <img
+                              src={`${getApiUrl()}/api/v1/unknown-faces/${face.id}/thumbnail`}
+                              alt="Rostro desconocido"
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                            <button
+                              onClick={() => setSnapshotFaceId(face.id)}
+                              className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center cursor-pointer"
+                              title="Ver imagen completa"
+                            >
+                              <ZoomIn className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                            </button>
+                          </>
                         ) : (
                           <HelpCircle className="h-12 w-12 text-white/60" />
                         )}
@@ -873,6 +883,25 @@ export default function DatabasePage() {
               <Button onClick={handleAddPerson}>Agregar y Subir Fotos</Button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Full Snapshot Lightbox for Unknown Faces */}
+      {snapshotFaceId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-pointer" onClick={() => setSnapshotFaceId(null)}>
+          <button className="absolute top-4 right-4 text-white hover:text-gray-300 z-50" onClick={() => setSnapshotFaceId(null)}>
+            <X className="h-8 w-8" />
+          </button>
+          <img
+            src={`${getApiUrl()}/api/v1/unknown-faces/${snapshotFaceId}/snapshot`}
+            alt="Imagen completa"
+            className="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            onError={(e) => {
+              // Fallback to thumbnail if no full snapshot
+              (e.target as HTMLImageElement).src = `${getApiUrl()}/api/v1/unknown-faces/${snapshotFaceId}/thumbnail`;
+            }}
+          />
         </div>
       )}
 

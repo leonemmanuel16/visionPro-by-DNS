@@ -522,6 +522,52 @@ async def get_unknown_face_thumbnail(
         raise HTTPException(404, f"Thumbnail not available: {str(e)}")
 
 
+@router.get("/unknown-faces/{face_id}/snapshot")
+async def get_unknown_face_snapshot(
+    face_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the full snapshot image of an unknown face from MinIO."""
+    from fastapi.responses import Response
+    from sqlalchemy import text
+
+    fid = uuid.UUID(face_id)
+    result = await db.execute(
+        text("SELECT thumbnail_path FROM unknown_faces WHERE id = :fid"),
+        {"fid": fid},
+    )
+    row = result.first()
+    if not row or not row[0]:
+        raise HTTPException(404, "Snapshot not found")
+
+    thumbnail_path = row[0]
+    # Derive full snapshot path: abc123.jpg → abc123_full.jpg
+    parts = thumbnail_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(404, "Invalid path")
+
+    bucket, object_name = parts[0], parts[1]
+    full_object = object_name.rsplit(".", 1)[0] + "_full.jpg"
+
+    try:
+        minio = get_minio_client()
+        data = minio.get_object(bucket, full_object)
+        content = data.read()
+        data.close()
+        data.release_conn()
+        return Response(content=content, media_type="image/jpeg")
+    except Exception:
+        # Fallback to thumbnail if full snapshot not available
+        try:
+            data = minio.get_object(bucket, object_name)
+            content = data.read()
+            data.close()
+            data.release_conn()
+            return Response(content=content, media_type="image/jpeg")
+        except Exception as e:
+            raise HTTPException(404, f"Snapshot not available: {str(e)}")
+
+
 @router.post("/events/{event_id}/associate-person")
 async def associate_event_to_person(
     event_id: str,

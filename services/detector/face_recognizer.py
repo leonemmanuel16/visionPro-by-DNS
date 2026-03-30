@@ -231,6 +231,11 @@ class FaceRecognizer:
 
             matched_faces = []
             for (top, right, bottom, left) in face_locations:
+                face_h = bottom - top
+                face_w = right - left
+                # Skip tiny detections — not real faces
+                if face_h < 30 or face_w < 30:
+                    continue
                 face_cx = (left + right) // 2
                 face_cy = (top + bottom) // 2
                 # Check if face center is within or near the person bbox
@@ -333,11 +338,15 @@ class FaceRecognizer:
             if face_location:
                 # face_location is (top, right, bottom, left) WITHIN the crop
                 ft, fr, fb, fl = face_location
-                # Add padding around face (30%)
-                fh = fb - ft
-                fw = fr - fl
-                pad_h = int(fh * 0.3)
-                pad_w = int(fw * 0.3)
+                face_h = fb - ft
+                face_w = fr - fl
+                # Reject tiny "faces" — likely false positives
+                if face_h < 30 or face_w < 30:
+                    log.debug("face_recognizer.face_too_small", face_h=face_h, face_w=face_w)
+                    return None
+                # Add padding around face (50% for better context)
+                pad_h = int(face_h * 0.5)
+                pad_w = int(face_w * 0.5)
                 crop = frame[
                     max(0, y1 + ft - pad_h): min(h, y1 + fb + pad_h),
                     max(0, x1 + fl - pad_w): min(w, x1 + fr + pad_w),
@@ -357,11 +366,25 @@ class FaceRecognizer:
             data = buffer.tobytes()
 
             now = datetime.now(timezone.utc)
-            object_name = f"unknown/{now.strftime('%Y%m%d')}/{uuid.uuid4().hex[:12]}.jpg"
+            file_id = uuid.uuid4().hex[:12]
+            object_name = f"unknown/{now.strftime('%Y%m%d')}/{file_id}.jpg"
             self.minio.put_object(
                 "faces", object_name, io.BytesIO(data), len(data),
                 content_type="image/jpeg",
             )
+
+            # Also save full snapshot for context
+            try:
+                _, full_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                full_data = full_buf.tobytes()
+                full_name = f"unknown/{now.strftime('%Y%m%d')}/{file_id}_full.jpg"
+                self.minio.put_object(
+                    "faces", full_name, io.BytesIO(full_data), len(full_data),
+                    content_type="image/jpeg",
+                )
+            except Exception:
+                pass  # Full snapshot is optional
+
             return f"faces/{object_name}"
         except Exception as e:
             log.warning("face_recognizer.save_thumbnail_failed", error=str(e))
