@@ -397,30 +397,9 @@ class DetectorService:
                         frame=candidate.frame,
                     )
 
-                # Publish person_count summary when multiple persons detected
-                person_dets = [d for d in filtered if d.label.startswith("person")]
-                if len(person_dets) >= 2:
-                    person_details = []
-                    for d in person_dets:
-                        detail = {
-                            "tracker_id": d.tracker_id,
-                            "bbox": list(d.bbox),
-                            "confidence": round(d.confidence, 2),
-                        }
-                        if hasattr(d, "metadata") and d.metadata:
-                            detail["person_name"] = d.metadata.get("person_name", "Desconocido")
-                            detail["person_id"] = d.metadata.get("person_id")
-                        else:
-                            detail["person_name"] = f"Persona {d.tracker_id}"
-                        person_details.append(detail)
-
-                    await publisher.publish_person_count(
-                        camera_id=camera_id,
-                        camera_name=camera_name,
-                        person_count=len(person_dets),
-                        person_details=person_details,
-                        frame=frame,
-                    )
+                # Person count summary — disabled to avoid alert spam
+                # The best-shot system handles individual person alerts
+                # person_dets = [d for d in filtered if d.label.startswith("person")]
 
                 await asyncio.sleep(frame_interval)
 

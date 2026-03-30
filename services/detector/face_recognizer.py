@@ -15,7 +15,9 @@ from minio import Minio
 log = structlog.get_logger()
 
 # Threshold for face match (lower = stricter)
-FACE_MATCH_THRESHOLD = 0.6
+# 0.6 = too permissive (confuses different people)
+# 0.45 = strict (fewer false positives, may miss some matches)
+FACE_MATCH_THRESHOLD = 0.45
 
 
 @dataclass
