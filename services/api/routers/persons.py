@@ -1,5 +1,6 @@
 """Person and Face Recognition routes."""
 
+import asyncio
 import io
 import uuid
 from datetime import datetime, timezone
@@ -249,22 +250,29 @@ async def upload_photo(
         "image/jpeg",
     )
 
-    # Try to compute face encoding (may fail if face_recognition not available)
+    # Compute face encoding in a thread pool to avoid blocking the event loop
+    def _compute_embedding(image: np.ndarray):
+        """CPU-heavy face detection + encoding — runs in thread pool."""
+        try:
+            import face_recognition
+            rgb = np.ascontiguousarray(image[:, :, ::-1])
+            locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="hog")
+            if locations:
+                encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
+                if encodings:
+                    return encodings[0], True
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        return None, False
+
     embedding = None
     face_detected = False
     try:
-        import face_recognition
-        rgb = np.ascontiguousarray(img[:, :, ::-1])
-        locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="hog")
-        if locations:
-            encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
-            if encodings:
-                embedding = encodings[0]
-                face_detected = True
-    except ImportError:
-        pass  # face_recognition not installed — save photo without embedding
-    except Exception as e:
-        pass  # face detection failed — save photo anyway
+        embedding, face_detected = await asyncio.to_thread(_compute_embedding, img)
+    except Exception:
+        pass
 
     if embedding is not None:
         # Save embedding to pgvector
@@ -630,38 +638,41 @@ async def associate_event_to_person(
     if img is None:
         raise HTTPException(status_code=400, detail="Could not decode snapshot image")
 
-    # Detect face and compute embedding
+    # Detect face and compute embedding in thread pool (CPU-heavy)
+    def _detect_and_embed(image: np.ndarray, raw_bytes: bytes):
+        """CPU-heavy face detection — runs in thread pool."""
+        emb = None
+        crop = None
+        try:
+            import face_recognition
+            rgb = np.ascontiguousarray(image[:, :, ::-1])
+            locations = face_recognition.face_locations(rgb, model="hog")
+            if not locations:
+                locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=2, model="hog")
+            if locations:
+                encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
+                if encodings:
+                    emb = encodings[0]
+                    top, right, bottom, left = locations[0]
+                    pad = int((bottom - top) * 0.3)
+                    h, w = image.shape[:2]
+                    top = max(0, top - pad)
+                    left = max(0, left - pad)
+                    bottom = min(h, bottom + pad)
+                    right = min(w, right + pad)
+                    face_crop = image[top:bottom, left:right]
+                    _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    crop = buf.tobytes()
+        except ImportError:
+            crop = raw_bytes
+        except Exception:
+            crop = raw_bytes
+        return emb, crop
+
     embedding = None
     face_crop_bytes = None
     try:
-        import face_recognition
-        rgb = np.ascontiguousarray(img[:, :, ::-1])
-
-        # Try CNN model first (better for surveillance images), fallback to HOG
-        locations = face_recognition.face_locations(rgb, model="cnn")
-        if not locations:
-            locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=2, model="hog")
-
-        if locations:
-            encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
-            if encodings:
-                embedding = encodings[0]
-
-                # Crop the face for the photo thumbnail
-                top, right, bottom, left = locations[0]
-                # Add padding
-                pad = int((bottom - top) * 0.3)
-                h, w = img.shape[:2]
-                top = max(0, top - pad)
-                left = max(0, left - pad)
-                bottom = min(h, bottom + pad)
-                right = min(w, right + pad)
-                face_crop = img[top:bottom, left:right]
-                _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                face_crop_bytes = buf.tobytes()
-    except ImportError:
-        # face_recognition not installed — save event snapshot as photo without embedding
-        face_crop_bytes = img_bytes
+        embedding, face_crop_bytes = await asyncio.to_thread(_detect_and_embed, img, img_bytes)
     except Exception:
         face_crop_bytes = img_bytes
 

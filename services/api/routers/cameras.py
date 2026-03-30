@@ -196,6 +196,17 @@ async def update_camera_route(
     camera = await update_camera(db, camera_id, data.model_dump(exclude_unset=True))
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Re-register streams in go2rtc after any camera update
+    # (handles codec changes like H.264 → H.265)
+    if camera.rtsp_main_stream:
+        await _register_streams_in_go2rtc(
+            str(camera.id),
+            camera.rtsp_main_stream,
+            camera.rtsp_sub_stream,
+        )
+        await _publish_camera_event("camera_online", str(camera.id), camera.ip_address)
+
     return camera
 
 

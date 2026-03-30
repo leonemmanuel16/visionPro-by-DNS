@@ -302,11 +302,15 @@ export default function DatabasePage() {
         fd.append("file", file);
 
         const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
         const res = await fetch(`${getApiUrl()}/api/v1/persons/${personId}/photos`, {
           method: "POST",
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: fd,
+          signal: controller.signal,
         });
+        clearTimeout(timeout);
 
         if (res.ok) {
           const data = await res.json();
@@ -322,8 +326,10 @@ export default function DatabasePage() {
           lastError = err.detail || "Error al subir la foto";
           setUploadMsg(lastError);
         }
-      } catch {
-        lastError = "Error de conexión al subir la foto";
+      } catch (err: any) {
+        lastError = err?.name === "AbortError"
+          ? "Tiempo de espera agotado — la foto se guardó pero el procesamiento tardó demasiado. Recarga la página."
+          : "Error de conexión al subir la foto";
         setUploadMsg(lastError);
       }
     }
