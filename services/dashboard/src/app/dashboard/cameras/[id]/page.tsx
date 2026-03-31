@@ -374,6 +374,7 @@ export default function CameraDetailPage() {
                   isOnline={camera.is_online}
                   className="aspect-video w-full"
                   videoFilter={`brightness(${imageSettings.brightness / 50}) contrast(${imageSettings.contrast / 50}) saturate(${imageSettings.saturation / 50})`}
+                  preferSubStream={true}
                 />
                 {camera.is_online && detections.length > 0 && (
                   <DetectionOverlay detections={detections} />

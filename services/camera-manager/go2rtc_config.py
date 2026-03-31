@@ -1,5 +1,6 @@
 """go2rtc Config Manager - Auto-generate streaming configuration."""
 
+import os
 import asyncpg
 import httpx
 import structlog
@@ -7,15 +8,19 @@ import yaml
 
 log = structlog.get_logger()
 
+# Use NVENC hardware encoding if available (NVIDIA GPU)
+# Set GO2RTC_HWACCEL=false to force software encoding
+USE_NVENC = os.environ.get("GO2RTC_HWACCEL", "true").lower() in ("true", "1", "yes")
+
 
 class Go2RTCConfigManager:
     """Generates go2rtc.yaml from database camera records.
 
     For each camera, generates:
       - cam_<id12>         : Raw RTSP (H.265/H.264 as-is, for recording/detector)
-      - cam_<id12>_h264    : Transcoded to H.264/Opus via FFmpeg (browser-compatible)
+      - cam_<id12>_h264    : Transcoded to H.264 via FFmpeg NVENC (browser-compatible)
       - cam_<id12>_sub     : Raw sub-stream RTSP
-      - cam_<id12>_sub_h264: Transcoded sub-stream to H.264/Opus
+      - cam_<id12>_sub_h264: Transcoded sub-stream to H.264 via FFmpeg NVENC
     """
 
     def __init__(self, db_pool: asyncpg.Pool, config_path: str = "/config/go2rtc.yaml"):
@@ -38,6 +43,15 @@ class Go2RTCConfigManager:
 
         log.info("go2rtc_config.cameras_found", count=len(cameras))
 
+        # Choose encoder: NVENC (GPU) or libx264 (CPU)
+        video_codec = "h264" if not USE_NVENC else "h264"
+        # go2rtc FFmpeg input flags for NVIDIA hardware decoding
+        hw_input = "-hwaccel cuda -hwaccel_output_format cuda" if USE_NVENC else ""
+        # go2rtc FFmpeg output flags for NVIDIA hardware encoding
+        hw_output = "-c:v h264_nvenc -preset p4 -tune ll -b:v 2M" if USE_NVENC else ""
+
+        log.info("go2rtc_config.codec", nvenc=USE_NVENC, hw_input=hw_input, hw_output=hw_output)
+
         streams: dict[str, list[str]] = {}
         for cam in cameras:
             # Use short ID for stream name
@@ -52,10 +66,16 @@ class Go2RTCConfigManager:
                 streams[safe_name] = [rtsp_main]
 
                 # H.264 transcoded stream: browser-compatible WebRTC/HLS
-                # go2rtc ffmpeg syntax: reference the base stream and transcode
-                streams[f"{safe_name}_h264"] = [
-                    f"ffmpeg:{safe_name}#video=h264#audio=opus"
-                ]
+                if USE_NVENC:
+                    # NVIDIA hardware: decode with NVDEC, encode with NVENC
+                    streams[f"{safe_name}_h264"] = [
+                        f"ffmpeg:{safe_name}#input={hw_input}#raw=-c:v h264_nvenc -preset p4 -tune ll -b:v 2M -c:a libopus"
+                    ]
+                else:
+                    # Software fallback
+                    streams[f"{safe_name}_h264"] = [
+                        f"ffmpeg:{safe_name}#video=h264#audio=opus"
+                    ]
 
             # --- Sub stream ---
             if cam["rtsp_sub_stream"] and cam["rtsp_sub_stream"] != cam["rtsp_main_stream"]:
@@ -65,9 +85,14 @@ class Go2RTCConfigManager:
                 streams[f"{safe_name}_sub"] = [rtsp_sub]
 
                 # H.264 transcoded sub-stream
-                streams[f"{safe_name}_sub_h264"] = [
-                    f"ffmpeg:{safe_name}_sub#video=h264#audio=opus"
-                ]
+                if USE_NVENC:
+                    streams[f"{safe_name}_sub_h264"] = [
+                        f"ffmpeg:{safe_name}_sub#input={hw_input}#raw=-c:v h264_nvenc -preset p4 -tune ll -b:v 1M -c:a libopus"
+                    ]
+                else:
+                    streams[f"{safe_name}_sub_h264"] = [
+                        f"ffmpeg:{safe_name}_sub#video=h264#audio=opus"
+                    ]
 
 
         config = {
