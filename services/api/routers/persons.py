@@ -761,3 +761,187 @@ async def delete_unknown_face(
     # Delete the unknown face
     await db.execute(text("DELETE FROM unknown_faces WHERE id = :fid"), {"fid": fid})
     await db.commit()
+
+
+@router.post("/import-nvr-faces")
+async def import_nvr_faces(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Import face database from Hikvision NVR into our persons table.
+
+    Queries the NVR FDLib, downloads each person's photo, creates a Person
+    record, saves the photo to MinIO, and computes face embedding.
+
+    Body: {"ip": "192.168.8.3", "username": "visionpro", "password": "Dns2026."}
+    """
+    import xml.etree.ElementTree as ET
+    import httpx
+    from sqlalchemy import text
+
+    nvr_ip = data.get("ip", "")
+    nvr_user = data.get("username", "")
+    nvr_pass = data.get("password", "")
+
+    if not nvr_ip or not nvr_user or not nvr_pass:
+        raise HTTPException(400, "ip, username, and password are required")
+
+    # Step 1: Get face libraries from NVR
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        auth = httpx.DigestAuth(nvr_user, nvr_pass)
+
+        # Get library list
+        resp = await client.get(
+            f"http://{nvr_ip}/ISAPI/Intelligent/FDLib", auth=auth
+        )
+        if resp.status_code != 200:
+            raise HTTPException(400, f"Could not query NVR FDLib: {resp.status_code}")
+
+        ns = {"hik": "http://www.hikvision.com/ver20/XMLSchema"}
+        root = ET.fromstring(resp.text)
+        libs = root.findall(".//hik:FDLibBaseCfg", ns) or root.findall(".//FDLibBaseCfg")
+
+        if not libs:
+            return {"message": "No face libraries found on NVR", "imported": []}
+
+        imported = []
+        skipped = []
+
+        # Get existing person names to avoid duplicates
+        result = await db.execute(select(Person))
+        existing_names = {p.name.lower().strip() for p in result.scalars().all()}
+
+        for lib in libs:
+            fdid_el = lib.find("hik:FDID", ns) or lib.find("FDID")
+            if fdid_el is None or not fdid_el.text:
+                continue
+            fdid = fdid_el.text
+
+            # Step 2: Search faces in this library
+            search_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <FDSearchDescription>
+                <searchID>{uuid.uuid4().hex[:16]}</searchID>
+                <searchResultPosition>0</searchResultPosition>
+                <maxResults>200</maxResults>
+                <FDID>{fdid}</FDID>
+            </FDSearchDescription>'''
+
+            resp = await client.post(
+                f"http://{nvr_ip}/ISAPI/Intelligent/FDLib/FDSearch",
+                content=search_xml,
+                headers={"Content-Type": "application/xml"},
+                auth=auth,
+            )
+            if resp.status_code != 200:
+                continue
+
+            search_root = ET.fromstring(resp.text)
+            matches = (
+                search_root.findall(".//hik:MatchElement", ns)
+                or search_root.findall(".//MatchElement")
+            )
+
+            for match in matches:
+                def _find(tag: str) -> str:
+                    el = match.find(f"hik:{tag}", ns)
+                    if el is None:
+                        el = match.find(tag)
+                    return el.text.strip() if el is not None and el.text else ""
+
+                name = _find("name")
+                pic_url = _find("picURL")
+                pid = _find("PID")
+                face_score = _find("faceScore")
+
+                if not name:
+                    continue
+
+                # Skip if person already exists
+                if name.lower().strip() in existing_names:
+                    skipped.append({"name": name, "reason": "already exists"})
+                    continue
+
+                # Step 3: Create person in our DB
+                person = Person(name=name, role="Empleado", department="")
+                db.add(person)
+                await db.commit()
+                await db.refresh(person)
+                person_id = str(person.id)
+                existing_names.add(name.lower().strip())
+
+                # Step 4: Download face photo from NVR
+                photo_saved = False
+                if pic_url:
+                    # Fix XML-escaped ampersands
+                    pic_url = pic_url.replace("&amp;", "&")
+                    try:
+                        photo_resp = await client.get(pic_url, auth=auth, timeout=15.0)
+                        if photo_resp.status_code == 200 and len(photo_resp.content) > 1000:
+                            photo_bytes = photo_resp.content
+                            photo_id = str(uuid.uuid4())
+
+                            # Save to MinIO
+                            minio = get_minio_client()
+                            photo_path = f"faces/{person_id}/{photo_id}.jpg"
+                            minio.put_object(
+                                "snapshots", photo_path,
+                                io.BytesIO(photo_bytes), len(photo_bytes),
+                                content_type="image/jpeg",
+                            )
+
+                            # Compute face embedding in thread pool
+                            nparr = np.frombuffer(photo_bytes, np.uint8)
+                            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                            def _compute(image):
+                                try:
+                                    import face_recognition
+                                    rgb = np.ascontiguousarray(image[:, :, ::-1])
+                                    locs = face_recognition.face_locations(rgb, model="hog")
+                                    if locs:
+                                        encs = face_recognition.face_encodings(rgb, locs)
+                                        if encs:
+                                            return encs[0]
+                                except Exception:
+                                    pass
+                                return None
+
+                            embedding = None
+                            if img is not None:
+                                embedding = await asyncio.to_thread(_compute, img)
+
+                            # Save embedding to face_embeddings
+                            full_path = f"snapshots/{photo_path}"
+                            emb_id = uuid.uuid4()
+                            if embedding is not None:
+                                emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+                                await db.execute(text("""
+                                    INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
+                                    VALUES (:id, :pid, CAST(:emb AS vector), :path, 'nvr_import')
+                                """), {"id": emb_id, "pid": person.id, "emb": emb_str, "path": full_path})
+                            else:
+                                await db.execute(text("""
+                                    INSERT INTO face_embeddings (id, person_id, photo_path, source)
+                                    VALUES (:id, :pid, :path, 'nvr_import')
+                                """), {"id": emb_id, "pid": person.id, "path": full_path})
+
+                            await db.commit()
+                            photo_saved = True
+                    except Exception as e:
+                        pass  # Photo download failed, person still created
+
+                imported.append({
+                    "id": person_id,
+                    "name": name,
+                    "nvr_pid": pid,
+                    "face_score": face_score,
+                    "photo_saved": photo_saved,
+                    "embedding_computed": photo_saved and embedding is not None,
+                })
+
+    return {
+        "message": f"Imported {len(imported)} persons from NVR ({len(skipped)} skipped)",
+        "imported": imported,
+        "skipped": skipped,
+    }
