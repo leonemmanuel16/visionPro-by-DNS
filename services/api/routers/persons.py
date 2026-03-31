@@ -871,6 +871,8 @@ async def import_nvr_faces(
 
                 # Step 4: Download face photo from NVR
                 photo_saved = False
+                photo_error = ""
+                embedding = None
                 if pic_url:
                     # Fix XML-escaped ampersands
                     pic_url = pic_url.replace("&amp;", "&")
@@ -928,7 +930,7 @@ async def import_nvr_faces(
                             await db.commit()
                             photo_saved = True
                     except Exception as e:
-                        pass  # Photo download failed, person still created
+                        photo_error = str(e)
 
                 imported.append({
                     "id": person_id,
@@ -936,7 +938,9 @@ async def import_nvr_faces(
                     "nvr_pid": pid,
                     "face_score": face_score,
                     "photo_saved": photo_saved,
-                    "embedding_computed": photo_saved and embedding is not None,
+                    "embedding_computed": embedding is not None,
+                    "photo_error": photo_error if not photo_saved else None,
+                    "pic_url": pic_url[:100] if pic_url and not photo_saved else None,
                 })
 
     return {

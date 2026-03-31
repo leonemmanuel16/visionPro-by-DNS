@@ -86,6 +86,8 @@ services:
       - SMTP_FROM_NAME=${SMTP_FROM_NAME:-DNS Vision Pro}
       - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
       - DDNS_CONFIG_PATH=/config/ddns.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config:/config
     depends_on:

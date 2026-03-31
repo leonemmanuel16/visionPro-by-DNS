@@ -9,36 +9,48 @@ import {
   Shield,
   Bell,
   Settings,
-  ChevronLeft,
-  ChevronRight,
   Database,
   Flame,
   Route,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/cameras", label: "Cámaras", icon: Camera },
+  { href: "/dashboard/cameras", label: "Camaras", icon: Camera },
   { href: "/dashboard/events", label: "Eventos", icon: Activity },
   { href: "/dashboard/zones", label: "Zonas", icon: Shield },
   { href: "/dashboard/alerts", label: "Alertas", icon: Bell },
   { href: "/dashboard/heatmap", label: "Mapa de Calor", icon: Flame },
-  { href: "/dashboard/traffic", label: "Tráfico", icon: Route },
+  { href: "/dashboard/traffic", label: "Trafico", icon: Route },
   { href: "/dashboard/database", label: "Base de Datos", icon: Database },
-  { href: "/dashboard/settings", label: "Configuración", icon: Settings },
+  { href: "/dashboard/settings", label: "Configuracion", icon: Settings },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const expanded = hovered;
+
+  const handleMouseEnter = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setHovered(true);
+  };
+
+  const handleMouseLeave = () => {
+    timeoutRef.current = setTimeout(() => setHovered(false), 200);
+  };
 
   return (
     <aside
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       className={cn(
-        "flex flex-col border-r border-gray-200 bg-white transition-all duration-200",
-        collapsed ? "w-16" : "w-60"
+        "flex flex-col border-r border-gray-200 bg-white transition-all duration-200 z-30",
+        expanded ? "w-60" : "w-16"
       )}
     >
       {/* Logo */}
@@ -48,7 +60,7 @@ export function Sidebar() {
           src="/dns-logo.png"
           alt="DNS Integradores TI"
           className="object-contain shrink-0"
-          style={{ height: collapsed ? "36px" : "60px", width: "auto" }}
+          style={{ height: expanded ? "60px" : "36px", width: "auto" }}
         />
       </div>
 
@@ -63,26 +75,26 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors whitespace-nowrap overflow-hidden",
                 isActive
                   ? "text-blue-600 font-semibold"
                   : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               )}
+              title={!expanded ? item.label : undefined}
             >
               <item.icon className="h-5 w-5 shrink-0" />
-              {!collapsed && <span>{item.label}</span>}
+              <span
+                className={cn(
+                  "transition-opacity duration-200",
+                  expanded ? "opacity-100" : "opacity-0 w-0"
+                )}
+              >
+                {item.label}
+              </span>
             </Link>
           );
         })}
       </nav>
-
-      {/* Collapse toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center justify-center border-t border-gray-200 p-3 text-gray-400 hover:text-gray-600"
-      >
-        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-      </button>
     </aside>
   );
 }
