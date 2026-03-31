@@ -31,13 +31,17 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
   const [trackingMap, setTrackingMap] = useState<Record<string, any[]>>({});
 
   useEffect(() => {
+    // Default to sub-stream in grid view (640x360 vs 2688x1520 = much lighter)
+    // User can override in settings
     try {
       const saved = localStorage.getItem("stream_settings");
       if (saved) {
         const settings = JSON.parse(saved);
-        setPreferSubStream(settings.quality === "low" || settings.quality === "medium");
+        setPreferSubStream(settings.quality !== "high");
+      } else {
+        setPreferSubStream(true); // Default: use sub-stream for grid
       }
-    } catch { /* ignore */ }
+    } catch { setPreferSubStream(true); }
 
     // Subscribe to live tracking data
     const handleTracking = (data: any) => {

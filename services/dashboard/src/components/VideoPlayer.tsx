@@ -48,8 +48,8 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(functi
   const getCandidates = useCallback((base: string): string[] => {
     if (preferSubStream) {
       return [
-        `${base}_sub_h264`,   // Sub transcoded H.264 (lowest bandwidth)
-        `${base}_sub`,        // Raw sub-stream
+        `${base}_sub`,        // Raw sub-stream (may be H.264, no transcoding!)
+        `${base}_sub_h264`,   // Sub transcoded H.264 (fallback if sub is H.265)
         `${base}_h264`,       // Main transcoded H.264
         base,                 // Raw main stream
       ];
@@ -90,8 +90,8 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(functi
           }
         };
 
-        // Timeout: 6s per candidate
-        const timer = setTimeout(() => done(false), 6000);
+        // Timeout: 4s per candidate (faster fallback)
+        const timer = setTimeout(() => done(false), 4000);
 
         pc.ontrack = (event) => {
           if (video && !cancelledRef.current) {
@@ -158,7 +158,7 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(functi
               }
             };
 
-            const timer = setTimeout(() => done(false), 8000);
+            const timer = setTimeout(() => done(false), 5000);
 
             const hls = new Hls({
               liveDurationInfinity: true,
