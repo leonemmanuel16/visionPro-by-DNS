@@ -280,9 +280,18 @@ export default function CameraDetailPage() {
   }
 
   const toggleDetection = (detId: string) => {
-    setEnabledDetections((prev) =>
-      prev.includes(detId) ? prev.filter((d) => d !== detId) : [...prev, detId]
-    );
+    setEnabledDetections((prev) => {
+      const next = prev.includes(detId) ? prev.filter((d) => d !== detId) : [...prev, detId];
+      // Auto-sync is_enabled with API: ON if any detection active, OFF if none
+      const shouldEnable = next.length > 0;
+      const wasEnabled = camera?.is_enabled ?? false;
+      if (shouldEnable !== wasEnabled) {
+        api.post(`/cameras/${id}/toggle-detection`, {}).then(() => {
+          if (camera) camera.is_enabled = shouldEnable;
+        }).catch(() => {});
+      }
+      return next;
+    });
   };
 
   const handleSaveSettings = () => {
@@ -290,9 +299,14 @@ export default function CameraDetailPage() {
     localStorage.setItem(`cam_image_${id}`, JSON.stringify(imageSettings));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-    // Also try to save to API
+    // Save detection config + sync is_enabled
     try {
       api.put(`/cameras/${id}/settings`, { detections: enabledDetections, image: imageSettings });
+      // Ensure is_enabled matches whether any detection is active
+      const shouldEnable = enabledDetections.length > 0;
+      if (camera && camera.is_enabled !== shouldEnable) {
+        api.post(`/cameras/${id}/toggle-detection`, {});
+      }
     } catch { /* demo */ }
   };
 
