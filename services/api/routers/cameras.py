@@ -306,6 +306,26 @@ async def probe_onvif(
         }
 
 
+@router.delete("/streams/{stream_name}", status_code=200)
+async def delete_stream(
+    stream_name: str,
+    user: User = Depends(get_current_user),
+):
+    """Delete a stream from go2rtc."""
+    go2rtc_urls = [GO2RTC_INTERNAL, "http://localhost:1984"]
+    for base_url in go2rtc_urls:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.delete(
+                    f"{base_url}/api/streams",
+                    params={"name": stream_name},
+                )
+                return {"message": f"Stream {stream_name} deleted", "status": resp.status_code}
+        except Exception:
+            continue
+    raise HTTPException(500, "Could not reach go2rtc")
+
+
 @router.post("/refresh-streams", status_code=200)
 async def refresh_streams(
     db: AsyncSession = Depends(get_db),
@@ -335,6 +355,141 @@ async def trigger_discovery(user: User = Depends(get_current_user)):
         return {"message": "Discovery triggered"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to trigger discovery: {e}")
+
+
+@router.post("/import-nvr", status_code=200)
+async def import_from_nvr(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Import all cameras from a Hikvision NVR via ISAPI.
+
+    Queries the NVR for connected cameras and auto-creates them in our DB.
+    RTSP streams go through the NVR (no individual camera passwords needed).
+
+    Body: {"ip": "192.168.8.3", "username": "visionpro", "password": "Dns2026.", "nvr_port": 554}
+    """
+    import xml.etree.ElementTree as ET
+
+    nvr_ip = data.get("ip", "")
+    nvr_user = data.get("username", "")
+    nvr_pass = data.get("password", "")
+    nvr_rtsp_port = data.get("nvr_port", 554)
+
+    if not nvr_ip or not nvr_user or not nvr_pass:
+        raise HTTPException(400, "ip, username, and password are required")
+
+    # Query NVR for camera channels via ISAPI
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"http://{nvr_ip}/ISAPI/ContentMgmt/InputProxy/channels",
+                auth=httpx.DigestAuth(nvr_user, nvr_pass),
+            )
+            if resp.status_code != 200:
+                raise HTTPException(400, f"NVR returned {resp.status_code}: {resp.text[:200]}")
+            xml_data = resp.text
+    except httpx.ConnectError:
+        raise HTTPException(400, f"Could not connect to NVR at {nvr_ip}")
+
+    # Parse XML response
+    ns = {"hik": "http://www.hikvision.com/ver20/XMLSchema"}
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError:
+        raise HTTPException(400, "Invalid XML response from NVR")
+
+    channels = root.findall(".//hik:InputProxyChannel", ns)
+    if not channels:
+        # Try without namespace
+        channels = root.findall(".//InputProxyChannel")
+
+    # Get existing cameras to avoid duplicates
+    existing = await get_cameras(db)
+    existing_ips = {c.ip_address for c in existing}
+
+    imported = []
+    skipped = []
+
+    for ch in channels:
+        def _find(tag: str) -> str:
+            el = ch.find(f"hik:{tag}", ns)
+            if el is None:
+                el = ch.find(tag)
+            if el is None:
+                # Check in sourceInputPortDescriptor
+                desc = ch.find("hik:sourceInputPortDescriptor", ns)
+                if desc is None:
+                    desc = ch.find("sourceInputPortDescriptor")
+                if desc is not None:
+                    el = desc.find(f"hik:{tag}", ns)
+                    if el is None:
+                        el = desc.find(tag)
+            return el.text.strip() if el is not None and el.text else ""
+
+        channel_id = _find("id")
+        name = _find("name") or f"Camera {channel_id}"
+        ip_address = _find("ipAddress")
+        model = _find("model")
+
+        if not channel_id or not ip_address:
+            continue
+
+        # Skip if already exists by IP
+        if ip_address in existing_ips:
+            skipped.append({"name": name, "ip": ip_address, "reason": "already exists"})
+            continue
+
+        # Build RTSP URLs through the NVR
+        ch_num = int(channel_id)
+        rtsp_main = f"rtsp://{nvr_user}:{nvr_pass}@{nvr_ip}:{nvr_rtsp_port}/Streaming/Channels/{ch_num}01"
+        rtsp_sub = f"rtsp://{nvr_user}:{nvr_pass}@{nvr_ip}:{nvr_rtsp_port}/Streaming/Channels/{ch_num}02"
+
+        # Create camera in DB
+        cam_data = {
+            "name": name,
+            "ip_address": ip_address,
+            "onvif_port": 80,
+            "manufacturer": "Hikvision",
+            "model": model or None,
+            "rtsp_main_stream": rtsp_main,
+            "rtsp_sub_stream": rtsp_sub,
+            "is_enabled": True,
+            "is_online": True,
+            "has_ptz": False,
+            "username": nvr_user,
+            "password_encrypted": nvr_pass,
+            "config": {"nvr_ip": nvr_ip, "nvr_channel": ch_num},
+        }
+
+        try:
+            camera = await create_camera(db, cam_data)
+            cam_id_str = str(camera.id)
+
+            # Register streams in go2rtc
+            await _register_streams_in_go2rtc(cam_id_str, rtsp_main, rtsp_sub)
+
+            # Notify camera-manager
+            await _publish_camera_event("camera_discovered", cam_id_str, ip_address)
+
+            existing_ips.add(ip_address)
+            imported.append({
+                "id": cam_id_str,
+                "name": name,
+                "ip": ip_address,
+                "model": model,
+                "nvr_channel": ch_num,
+            })
+        except Exception as e:
+            skipped.append({"name": name, "ip": ip_address, "reason": str(e)})
+
+    return {
+        "message": f"Imported {len(imported)} cameras from NVR ({len(skipped)} skipped)",
+        "imported": imported,
+        "skipped": skipped,
+        "nvr_ip": nvr_ip,
+    }
 
 
 @router.post("/{camera_id}/ptz")
