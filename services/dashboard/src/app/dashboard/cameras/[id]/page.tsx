@@ -374,7 +374,7 @@ export default function CameraDetailPage() {
                   isOnline={camera.is_online}
                   className="aspect-video w-full"
                   intervalMs={67}
-                  width={640}
+                  width={1280}
                 />
                 {camera.is_online && detections.length > 0 && (
                   <DetectionOverlay detections={detections} />
