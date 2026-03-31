@@ -787,8 +787,13 @@ async def import_nvr_faces(
     if not nvr_ip or not nvr_user or not nvr_pass:
         raise HTTPException(400, "ip, username, and password are required")
 
+    def _strip_ns(xml_str: str) -> str:
+        """Remove XML namespaces for easier parsing."""
+        import re
+        return re.sub(r'\s+xmlns[^"]*"[^"]*"', '', re.sub(r'<(/?)(\w+:)', r'<\1', xml_str))
+
     # Step 1: Get face libraries from NVR
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         auth = httpx.DigestAuth(nvr_user, nvr_pass)
 
         # Get library list
@@ -798,12 +803,11 @@ async def import_nvr_faces(
         if resp.status_code != 200:
             raise HTTPException(400, f"Could not query NVR FDLib: {resp.status_code}")
 
-        ns = {"hik": "http://www.hikvision.com/ver20/XMLSchema"}
-        root = ET.fromstring(resp.text)
-        libs = root.findall(".//hik:FDLibBaseCfg", ns) or root.findall(".//FDLibBaseCfg")
+        root = ET.fromstring(_strip_ns(resp.text))
+        libs = root.findall(".//FDLibBaseCfg")
 
         if not libs:
-            return {"message": "No face libraries found on NVR", "imported": []}
+            return {"message": "No face libraries found on NVR", "imported": [], "debug": resp.text[:500]}
 
         imported = []
         skipped = []
@@ -813,10 +817,10 @@ async def import_nvr_faces(
         existing_names = {p.name.lower().strip() for p in result.scalars().all()}
 
         for lib in libs:
-            fdid_el = lib.find("hik:FDID", ns) or lib.find("FDID")
+            fdid_el = lib.find("FDID")
             if fdid_el is None or not fdid_el.text:
                 continue
-            fdid = fdid_el.text
+            fdid = fdid_el.text.strip()
 
             # Step 2: Search faces in this library
             search_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -836,17 +840,12 @@ async def import_nvr_faces(
             if resp.status_code != 200:
                 continue
 
-            search_root = ET.fromstring(resp.text)
-            matches = (
-                search_root.findall(".//hik:MatchElement", ns)
-                or search_root.findall(".//MatchElement")
-            )
+            search_root = ET.fromstring(_strip_ns(resp.text))
+            matches = search_root.findall(".//MatchElement")
 
             for match in matches:
-                def _find(tag: str) -> str:
-                    el = match.find(f"hik:{tag}", ns)
-                    if el is None:
-                        el = match.find(tag)
+                def _find(tag: str, node=match) -> str:
+                    el = node.find(tag)
                     return el.text.strip() if el is not None and el.text else ""
 
                 name = _find("name")
