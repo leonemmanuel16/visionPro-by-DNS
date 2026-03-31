@@ -6,6 +6,7 @@ import { Header } from "@/components/Header";
 import { SnapshotPlayer } from "@/components/SnapshotPlayer";
 import { PTZControls } from "@/components/PTZControls";
 import { DetectionOverlay } from "@/components/DetectionOverlay";
+import { ZoneEditor } from "@/components/ZoneEditor";
 import { wsClient } from "@/lib/websocket";
 import { FisheyeDewarper } from "@/components/FisheyeDewarper";
 import { EventCard } from "@/components/EventCard";
@@ -13,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { getGo2rtcUrl } from "@/lib/urls";
 import {
   Trash2,
   Settings,
@@ -30,6 +32,9 @@ import {
   Palette,
   Save,
   ArrowLeft,
+  Plus,
+  MapPin,
+  X,
 } from "lucide-react";
 
 interface CameraDetail {
@@ -97,6 +102,13 @@ export default function CameraDetailPage() {
   // Event rate limit display
   const EVENT_COOLDOWN = 30;
 
+  // Zone management
+  const [zones, setZones] = useState<any[]>([]);
+  const [showZoneEditor, setShowZoneEditor] = useState(false);
+  const [newZoneName, setNewZoneName] = useState("");
+  const [loadingZones, setLoadingZones] = useState(false);
+  const [editingZone, setEditingZone] = useState<any | null>(null);
+
   // Saved message
   const [saved, setSaved] = useState(false);
 
@@ -161,6 +173,10 @@ export default function CameraDetailPage() {
     // Load events
     if (isValidUUID(id)) {
       api.get<any[]>(`/events?camera_id=${id}&per_page=10`).then(setEvents).catch(() => setEvents([]));
+      // Load zones
+      api.get<any[]>(`/zones?camera_id=${id}`).then((data) => {
+        setZones(Array.isArray(data) ? data : []);
+      }).catch(() => setZones([]));
     }
 
     // Load saved detection settings
@@ -282,16 +298,87 @@ export default function CameraDetailPage() {
   const toggleDetection = (detId: string) => {
     setEnabledDetections((prev) => {
       const next = prev.includes(detId) ? prev.filter((d) => d !== detId) : [...prev, detId];
-      // Auto-sync is_enabled with API: ON if any detection active, OFF if none
+      // Auto-sync is_enabled with API: use PUT to SET exact state (not toggle)
       const shouldEnable = next.length > 0;
       const wasEnabled = camera?.is_enabled ?? false;
       if (shouldEnable !== wasEnabled) {
-        api.post(`/cameras/${id}/toggle-detection`, {}).then(() => {
-          if (camera) camera.is_enabled = shouldEnable;
-        }).catch(() => {});
+        // Set immediately to prevent race conditions on rapid clicks
+        if (camera) camera.is_enabled = shouldEnable;
+        setCamera((prev) => prev ? { ...prev, is_enabled: shouldEnable } : prev);
+        api.put(`/cameras/${id}`, { is_enabled: shouldEnable }).catch(() => {
+          // Revert on failure
+          if (camera) camera.is_enabled = wasEnabled;
+          setCamera((prev) => prev ? { ...prev, is_enabled: wasEnabled } : prev);
+        });
       }
       return next;
     });
+  };
+
+  const go2rtcUrl = getGo2rtcUrl();
+
+  const loadZones = async () => {
+    if (!isValidUUID(id)) return;
+    setLoadingZones(true);
+    try {
+      const data = await api.get<any[]>(`/zones?camera_id=${id}`);
+      setZones(Array.isArray(data) ? data : []);
+    } catch {
+      setZones([]);
+    }
+    setLoadingZones(false);
+  };
+
+  const handleCreateZone = async (points: { x: number; y: number }[]) => {
+    const name = newZoneName.trim() || `Zona ${zones.length + 1}`;
+    try {
+      await api.post("/zones", {
+        camera_id: id,
+        name,
+        zone_type: "roi",
+        points: points.map((p) => ({ x: p.x, y: p.y })),
+        detect_classes: enabledDetections.filter((d) => ["person", "vehicle", "animal"].includes(d)),
+        is_enabled: true,
+      });
+      await loadZones();
+    } catch (err) {
+      console.error("Failed to create zone:", err);
+    }
+    setShowZoneEditor(false);
+    setNewZoneName("");
+  };
+
+  const handleUpdateZone = async (points: { x: number; y: number }[]) => {
+    if (!editingZone) return;
+    try {
+      await api.put(`/zones/${editingZone.id}`, {
+        ...editingZone,
+        points: points.map((p) => ({ x: p.x, y: p.y })),
+      });
+      await loadZones();
+    } catch (err) {
+      console.error("Failed to update zone:", err);
+    }
+    setEditingZone(null);
+  };
+
+  const handleDeleteZone = async (zoneId: string) => {
+    if (!confirm("¿Eliminar esta zona de detección?")) return;
+    try {
+      await api.del(`/zones/${zoneId}`);
+      setZones((prev) => prev.filter((z) => z.id !== zoneId));
+    } catch (err) {
+      console.error("Failed to delete zone:", err);
+    }
+  };
+
+  const handleToggleZone = async (zone: any) => {
+    try {
+      await api.put(`/zones/${zone.id}`, { ...zone, is_enabled: !zone.is_enabled });
+      setZones((prev) => prev.map((z) => z.id === zone.id ? { ...z, is_enabled: !z.is_enabled } : z));
+    } catch (err) {
+      console.error("Failed to toggle zone:", err);
+    }
   };
 
   const handleSaveSettings = () => {
@@ -299,13 +386,13 @@ export default function CameraDetailPage() {
     localStorage.setItem(`cam_image_${id}`, JSON.stringify(imageSettings));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-    // Save detection config + sync is_enabled
+    // Save detection config + sync is_enabled via PUT (set exact state, no toggle)
     try {
       api.put(`/cameras/${id}/settings`, { detections: enabledDetections, image: imageSettings });
-      // Ensure is_enabled matches whether any detection is active
       const shouldEnable = enabledDetections.length > 0;
       if (camera && camera.is_enabled !== shouldEnable) {
-        api.post(`/cameras/${id}/toggle-detection`, {});
+        api.put(`/cameras/${id}`, { is_enabled: shouldEnable });
+        setCamera((prev) => prev ? { ...prev, is_enabled: shouldEnable } : prev);
       }
     } catch { /* demo */ }
   };
@@ -655,6 +742,113 @@ export default function CameraDetailPage() {
                   </button>
                 );
               })}
+            </div>
+
+            {/* ── Zonas de Detección ── */}
+            <div className="border-t border-gray-200 pt-6 mt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-blue-600" />
+                    Zonas de Detección
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Dibuja zonas para limitar el análisis de IA a áreas específicas. Sin zonas, se analiza toda la imagen.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => { setEditingZone(null); setNewZoneName(""); setShowZoneEditor(true); }}
+                  disabled={showZoneEditor || !!editingZone}
+                >
+                  <Plus className="h-4 w-4 mr-1" /> Nueva Zona
+                </Button>
+              </div>
+
+              {/* Zone name input when creating */}
+              {showZoneEditor && !editingZone && (
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Nombre de la zona</label>
+                  <input
+                    type="text"
+                    value={newZoneName}
+                    onChange={(e) => setNewZoneName(e.target.value)}
+                    placeholder={`Zona ${zones.length + 1}`}
+                    className="w-full max-w-xs px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    autoFocus
+                  />
+                </div>
+              )}
+
+              {/* Zone Editor (create or edit) */}
+              {(showZoneEditor || editingZone) && (
+                <div className="mb-4 border border-blue-200 rounded-lg overflow-hidden bg-blue-50 p-3">
+                  <p className="text-xs text-blue-700 mb-2 font-medium">
+                    {editingZone ? `Editando: ${editingZone.name}` : "Haz clic en la imagen para dibujar los vértices de la zona. Mínimo 3 puntos."}
+                  </p>
+                  <ZoneEditor
+                    snapshotUrl={`${go2rtcUrl}/api/frame.jpeg?src=cam_${camera.id.replace(/-/g, "").slice(0, 12)}&width=640`}
+                    initialPoints={editingZone?.points || []}
+                    onSave={editingZone ? handleUpdateZone : handleCreateZone}
+                    onCancel={() => { setShowZoneEditor(false); setEditingZone(null); }}
+                  />
+                </div>
+              )}
+
+              {/* Existing zones list */}
+              {zones.length === 0 && !showZoneEditor && !editingZone ? (
+                <div className="text-center py-8 text-gray-400 border border-dashed border-gray-200 rounded-lg">
+                  <MapPin className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No hay zonas configuradas</p>
+                  <p className="text-xs mt-1">Se analiza toda la imagen por defecto</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {zones.map((zone) => (
+                    <div
+                      key={zone.id}
+                      className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
+                        zone.is_enabled ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => handleToggleZone(zone)}
+                          className={`h-4 w-8 rounded-full transition-colors ${zone.is_enabled ? "bg-green-500" : "bg-gray-300"}`}
+                        >
+                          <div className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${zone.is_enabled ? "translate-x-4" : "translate-x-0"}`} />
+                        </button>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{zone.name}</p>
+                          <p className="text-xs text-gray-500">
+                            {zone.points?.length || 0} puntos · {zone.zone_type === "roi" ? "Región de interés" : zone.zone_type}
+                            {zone.detect_classes?.length > 0 && ` · ${zone.detect_classes.join(", ")}`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setShowZoneEditor(false);
+                            setEditingZone(zone);
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                          title="Editar zona"
+                        >
+                          <Settings className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteZone(zone.id)}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                          title="Eliminar zona"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
