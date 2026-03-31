@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
-import { VideoPlayer } from "@/components/VideoPlayer";
+import { SnapshotPlayer } from "@/components/SnapshotPlayer";
 import { PTZControls } from "@/components/PTZControls";
 import { DetectionOverlay } from "@/components/DetectionOverlay";
 import { wsClient } from "@/lib/websocket";
@@ -369,12 +369,12 @@ export default function CameraDetailPage() {
               />
             ) : (
               <div className="relative rounded-lg overflow-hidden border border-gray-200">
-                <VideoPlayer
+                <SnapshotPlayer
                   cameraName={streamName}
                   isOnline={camera.is_online}
                   className="aspect-video w-full"
-                  videoFilter={`brightness(${imageSettings.brightness / 50}) contrast(${imageSettings.contrast / 50}) saturate(${imageSettings.saturation / 50})`}
-                  preferSubStream={true}
+                  intervalMs={100}
+                  width={640}
                 />
                 {camera.is_online && detections.length > 0 && (
                   <DetectionOverlay detections={detections} />
