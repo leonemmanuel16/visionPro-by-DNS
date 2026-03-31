@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
-import { VideoPlayer } from "./VideoPlayer";
+import { SnapshotPlayer } from "./SnapshotPlayer";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { wsClient } from "@/lib/websocket";
 import { Badge } from "@/components/ui/badge";
@@ -26,24 +26,10 @@ interface CameraGridProps {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
-  // Read stream quality preference from settings
-  const [preferSubStream, setPreferSubStream] = useState(false);
   // Live tracking detections per camera
   const [trackingMap, setTrackingMap] = useState<Record<string, any[]>>({});
 
   useEffect(() => {
-    // Default to sub-stream in grid view (640x360 vs 2688x1520 = much lighter)
-    // User can override in settings
-    try {
-      const saved = localStorage.getItem("stream_settings");
-      if (saved) {
-        const settings = JSON.parse(saved);
-        setPreferSubStream(settings.quality !== "high");
-      } else {
-        setPreferSubStream(true); // Default: use sub-stream for grid
-      }
-    } catch { setPreferSubStream(true); }
-
     // Subscribe to live tracking data
     const handleTracking = (data: any) => {
       if (data.type === "tracking" && data.camera_id) {
@@ -101,11 +87,11 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
             >
               <div className="relative rounded-lg border border-gray-200 bg-white overflow-hidden hover:border-blue-400 transition-colors shadow-sm">
                 <div className="relative">
-                  <VideoPlayer
+                  <SnapshotPlayer
                     cameraName={streamName}
                     isOnline={camera.is_online}
                     className="aspect-video"
-                    preferSubStream={preferSubStream}
+                    intervalMs={gridSize >= 4 ? 2000 : 1500}
                   />
                   {camera.is_online && detections.length > 0 && (
                     <DetectionOverlay detections={detections} />
