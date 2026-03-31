@@ -375,6 +375,7 @@ export default function CameraDetailPage() {
                   className="aspect-video w-full"
                   intervalMs={67}
                   width={1280}
+                  useMainStream={true}
                 />
                 {camera.is_online && detections.length > 0 && (
                   <DetectionOverlay detections={detections} />

@@ -12,6 +12,8 @@ interface SnapshotPlayerProps {
   intervalMs?: number;
   /** Image width in pixels (default: 640) */
   width?: number;
+  /** Use main stream instead of sub for higher quality (default: false) */
+  useMainStream?: boolean;
 }
 
 /**
@@ -27,6 +29,7 @@ export function SnapshotPlayer({
   className = "",
   intervalMs = 1000,
   width = 640,
+  useMainStream = false,
 }: SnapshotPlayerProps) {
   const [currentSrc, setCurrentSrc] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -39,10 +42,9 @@ export function SnapshotPlayer({
 
   const go2rtcUrl = getGo2rtcUrl();
 
-  const candidates = [
-    `${cameraName}_sub`,
-    `${cameraName}`,
-  ];
+  const candidates = useMainStream
+    ? [`${cameraName}`, `${cameraName}_sub`]         // Main first for quality
+    : [`${cameraName}_sub`, `${cameraName}`];         // Sub first for speed
 
   const fetchFrame = useCallback(() => {
     if (!mountedRef.current || !isOnline || loadingRef.current) return;
