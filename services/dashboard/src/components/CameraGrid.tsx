@@ -5,13 +5,14 @@ import { VideoPlayer } from "./VideoPlayer";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { wsClient } from "@/lib/websocket";
 import { Badge } from "@/components/ui/badge";
-import { Trash2 } from "lucide-react";
+import { Trash2, BrainCircuit } from "lucide-react";
 import Link from "next/link";
 
 interface Camera {
   id: string;
   name: string;
   is_online: boolean;
+  is_enabled?: boolean;
   location?: string;
 }
 
@@ -115,9 +116,15 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
                     <span className="text-sm font-medium text-white truncate">
                       {camera.name}
                     </span>
-                    <Badge variant={camera.is_online ? "success" : "destructive"}>
-                      {camera.is_online ? "Online" : "Offline"}
-                    </Badge>
+                    <div className="flex items-center gap-1.5">
+                      <Badge variant={camera.is_enabled ? "default" : "secondary"} className={camera.is_enabled ? "bg-purple-600 hover:bg-purple-700" : "bg-gray-500/70 text-gray-200"}>
+                        <BrainCircuit className="h-3 w-3 mr-1" />
+                        {camera.is_enabled ? "AI" : "AI Off"}
+                      </Badge>
+                      <Badge variant={camera.is_online ? "success" : "destructive"}>
+                        {camera.is_online ? "Online" : "Offline"}
+                      </Badge>
+                    </div>
                   </div>
                   {camera.location && (
                     <p className="text-xs text-gray-300 mt-0.5">{camera.location}</p>

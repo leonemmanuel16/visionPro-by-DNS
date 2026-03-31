@@ -70,6 +70,14 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # NVIDIA GPU monitoring (read-only access to nvidia-smi)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [utility]
     environment:
       - POSTGRES_URL=postgresql+asyncpg://vision:${DB_PASSWORD}@postgres:5432/visionai
       - REDIS_URL=redis://redis:6379
@@ -86,6 +94,13 @@ services:
       - SMTP_FROM_NAME=${SMTP_FROM_NAME:-DNS Vision Pro}
       - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
       - DDNS_CONFIG_PATH=/config/ddns.json
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
+      - HEALTH_ALERT_CPU_THRESHOLD=${HEALTH_ALERT_CPU_THRESHOLD:-90}
+      - HEALTH_ALERT_RAM_THRESHOLD=${HEALTH_ALERT_RAM_THRESHOLD:-90}
+      - HEALTH_ALERT_GPU_THRESHOLD=${HEALTH_ALERT_GPU_THRESHOLD:-95}
+      - HEALTH_ALERT_GPU_TEMP_THRESHOLD=${HEALTH_ALERT_GPU_TEMP_THRESHOLD:-85}
+      - HEALTH_ALERT_DISK_THRESHOLD=${HEALTH_ALERT_DISK_THRESHOLD:-90}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

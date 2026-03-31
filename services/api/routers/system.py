@@ -1,12 +1,17 @@
-"""System routes - updates, health, version info, DDNS."""
+"""System routes - updates, health, version info, DDNS, health monitoring."""
 
 import json
 import subprocess
 import os
 import urllib.request
+import time
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+import psutil
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -256,3 +261,309 @@ async def test_ddns(config: DdnsConfig):
         return {"status": "ok", "ip": ip, "message": f"DDNS actualizado correctamente a {ip}"}
     else:
         raise HTTPException(400, result)
+
+
+# ── Health Monitoring ──────────────────────────────────────────────────────
+
+HEALTH_CONFIG_PATH = os.environ.get("HEALTH_CONFIG_PATH", "/config/health_thresholds.json")
+
+# Default thresholds (can be overridden via env or API)
+DEFAULT_THRESHOLDS = {
+    "cpu_percent": int(os.environ.get("HEALTH_ALERT_CPU_THRESHOLD", "90")),
+    "ram_percent": int(os.environ.get("HEALTH_ALERT_RAM_THRESHOLD", "90")),
+    "gpu_percent": int(os.environ.get("HEALTH_ALERT_GPU_THRESHOLD", "95")),
+    "gpu_temp_c": int(os.environ.get("HEALTH_ALERT_GPU_TEMP_THRESHOLD", "85")),
+    "disk_percent": int(os.environ.get("HEALTH_ALERT_DISK_THRESHOLD", "90")),
+    "gpu_mem_percent": 90,
+}
+
+# In-memory alert cooldown to avoid spam (alert_key -> last_alert_time)
+_alert_cooldowns: dict[str, float] = {}
+ALERT_COOLDOWN_SECONDS = 300  # 5 minutes between repeated alerts
+
+
+class GpuInfo(BaseModel):
+    name: str = ""
+    gpu_util: float = 0
+    mem_used_mb: float = 0
+    mem_total_mb: float = 0
+    mem_percent: float = 0
+    temperature: float = 0
+    fan_speed: float = 0
+    power_draw_w: float = 0
+    power_limit_w: float = 0
+    available: bool = False
+
+
+class DiskInfo(BaseModel):
+    device: str
+    mountpoint: str
+    total_gb: float
+    used_gb: float
+    free_gb: float
+    percent: float
+
+
+class HealthMetrics(BaseModel):
+    timestamp: str
+    # CPU
+    cpu_percent: float
+    cpu_count: int
+    cpu_count_logical: int
+    cpu_freq_mhz: float
+    cpu_per_core: list[float]
+    # RAM
+    ram_total_gb: float
+    ram_used_gb: float
+    ram_available_gb: float
+    ram_percent: float
+    # Swap
+    swap_total_gb: float
+    swap_used_gb: float
+    swap_percent: float
+    # GPU
+    gpu: GpuInfo
+    # Disk
+    disks: list[DiskInfo]
+    # System
+    uptime_seconds: float
+    load_avg: list[float]
+    # Alerts triggered
+    alerts: list[dict]
+
+
+class HealthThresholds(BaseModel):
+    cpu_percent: int = 90
+    ram_percent: int = 90
+    gpu_percent: int = 95
+    gpu_temp_c: int = 85
+    gpu_mem_percent: int = 90
+    disk_percent: int = 90
+
+
+def _get_thresholds() -> dict:
+    """Load thresholds from config file or return defaults."""
+    try:
+        if os.path.exists(HEALTH_CONFIG_PATH):
+            with open(HEALTH_CONFIG_PATH) as f:
+                return {**DEFAULT_THRESHOLDS, **json.load(f)}
+    except Exception:
+        pass
+    return DEFAULT_THRESHOLDS.copy()
+
+
+def _get_gpu_info() -> GpuInfo:
+    """Query nvidia-smi for GPU metrics."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,fan.speed,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return GpuInfo()
+
+        line = result.stdout.strip().split("\n")[0]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 8:
+            return GpuInfo()
+
+        mem_used = float(parts[2])
+        mem_total = float(parts[3])
+        mem_pct = (mem_used / mem_total * 100) if mem_total > 0 else 0
+
+        # Fan speed may be "[N/A]" for some GPUs
+        try:
+            fan = float(parts[5])
+        except (ValueError, IndexError):
+            fan = 0
+
+        # Power draw may be "[N/A]"
+        try:
+            power_draw = float(parts[6])
+        except (ValueError, IndexError):
+            power_draw = 0
+
+        try:
+            power_limit = float(parts[7])
+        except (ValueError, IndexError):
+            power_limit = 0
+
+        return GpuInfo(
+            name=parts[0],
+            gpu_util=float(parts[1]),
+            mem_used_mb=mem_used,
+            mem_total_mb=mem_total,
+            mem_percent=round(mem_pct, 1),
+            temperature=float(parts[4]),
+            fan_speed=fan,
+            power_draw_w=power_draw,
+            power_limit_w=power_limit,
+            available=True,
+        )
+    except FileNotFoundError:
+        return GpuInfo()
+    except Exception:
+        return GpuInfo()
+
+
+def _get_disk_info() -> list[DiskInfo]:
+    """Get disk usage for all mounted partitions."""
+    disks = []
+    seen_devices = set()
+    for part in psutil.disk_partitions(all=False):
+        if part.device in seen_devices:
+            continue
+        if part.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
+            continue
+        seen_devices.add(part.device)
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            disks.append(DiskInfo(
+                device=part.device,
+                mountpoint=part.mountpoint,
+                total_gb=round(usage.total / (1024**3), 1),
+                used_gb=round(usage.used / (1024**3), 1),
+                free_gb=round(usage.free / (1024**3), 1),
+                percent=usage.percent,
+            ))
+        except PermissionError:
+            continue
+    return disks
+
+
+def _check_alerts(metrics: HealthMetrics, thresholds: dict) -> list[dict]:
+    """Check if any metrics exceed thresholds and return alert list."""
+    alerts = []
+    now = time.time()
+
+    def _maybe_alert(key: str, label: str, value: float, threshold: float, unit: str, severity: str = "warning"):
+        if value >= threshold:
+            # Check cooldown
+            if key in _alert_cooldowns and (now - _alert_cooldowns[key]) < ALERT_COOLDOWN_SECONDS:
+                return
+            _alert_cooldowns[key] = now
+            alerts.append({
+                "key": key,
+                "label": label,
+                "value": round(value, 1),
+                "threshold": threshold,
+                "unit": unit,
+                "severity": severity,
+                "message": f"{label}: {round(value, 1)}{unit} (umbral: {threshold}{unit})",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+    _maybe_alert("cpu", "CPU", metrics.cpu_percent, thresholds["cpu_percent"], "%")
+    _maybe_alert("ram", "Memoria RAM", metrics.ram_percent, thresholds["ram_percent"], "%")
+    _maybe_alert("disk", "Disco", max((d.percent for d in metrics.disks), default=0), thresholds["disk_percent"], "%")
+
+    if metrics.gpu.available:
+        _maybe_alert("gpu_util", "GPU Utilizacion", metrics.gpu.gpu_util, thresholds["gpu_percent"], "%", "critical")
+        _maybe_alert("gpu_temp", "GPU Temperatura", metrics.gpu.temperature, thresholds["gpu_temp_c"], "°C", "critical")
+        _maybe_alert("gpu_mem", "GPU Memoria", metrics.gpu.mem_percent, thresholds["gpu_mem_percent"], "%")
+
+    return alerts
+
+
+# Store alert history in memory (last 100 alerts)
+_alert_history: list[dict] = []
+MAX_ALERT_HISTORY = 100
+
+
+@router.get("/health-metrics", response_model=HealthMetrics)
+async def get_health_metrics():
+    """Collect real-time system health metrics (CPU, RAM, GPU, Disk)."""
+    # CPU
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
+    cpu_freq = psutil.cpu_freq()
+    cpu_count = psutil.cpu_count(logical=False) or 1
+    cpu_count_logical = psutil.cpu_count(logical=True) or 1
+
+    # RAM
+    mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+
+    # GPU
+    gpu = _get_gpu_info()
+
+    # Disk
+    disks = _get_disk_info()
+
+    # System
+    boot_time = psutil.boot_time()
+    uptime = time.time() - boot_time
+    load_avg = list(os.getloadavg()) if hasattr(os, "getloadavg") else [0, 0, 0]
+
+    metrics = HealthMetrics(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        cpu_percent=cpu_percent,
+        cpu_count=cpu_count,
+        cpu_count_logical=cpu_count_logical,
+        cpu_freq_mhz=round(cpu_freq.current, 0) if cpu_freq else 0,
+        cpu_per_core=cpu_per_core,
+        ram_total_gb=round(mem.total / (1024**3), 1),
+        ram_used_gb=round(mem.used / (1024**3), 1),
+        ram_available_gb=round(mem.available / (1024**3), 1),
+        ram_percent=mem.percent,
+        swap_total_gb=round(swap.total / (1024**3), 1),
+        swap_used_gb=round(swap.used / (1024**3), 1),
+        swap_percent=swap.percent,
+        gpu=gpu,
+        disks=disks,
+        uptime_seconds=uptime,
+        load_avg=[round(l, 2) for l in load_avg],
+        alerts=[],
+    )
+
+    # Check thresholds and generate alerts
+    thresholds = _get_thresholds()
+    alerts = _check_alerts(metrics, thresholds)
+    metrics.alerts = alerts
+
+    # Store alerts in history
+    for alert in alerts:
+        _alert_history.append(alert)
+        if len(_alert_history) > MAX_ALERT_HISTORY:
+            _alert_history.pop(0)
+
+    return metrics
+
+
+@router.get("/health-alerts")
+async def get_health_alerts():
+    """Get recent health alert history."""
+    return {"alerts": list(reversed(_alert_history)), "count": len(_alert_history)}
+
+
+@router.post("/health-alerts/clear")
+async def clear_health_alerts():
+    """Clear all health alerts."""
+    _alert_history.clear()
+    _alert_cooldowns.clear()
+    return {"status": "cleared"}
+
+
+@router.get("/health-thresholds", response_model=HealthThresholds)
+async def get_health_thresholds():
+    """Get current health alert thresholds."""
+    t = _get_thresholds()
+    return HealthThresholds(**t)
+
+
+@router.post("/health-thresholds")
+async def save_health_thresholds(thresholds: HealthThresholds):
+    """Save health alert thresholds."""
+    try:
+        os.makedirs(os.path.dirname(HEALTH_CONFIG_PATH), exist_ok=True)
+        with open(HEALTH_CONFIG_PATH, "w") as f:
+            json.dump(thresholds.dict(), f, indent=2)
+        return {"status": "saved"}
+    except Exception as e:
+        raise HTTPException(500, str(e))

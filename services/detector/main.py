@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import json
+import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import asyncpg
@@ -130,11 +131,21 @@ class DetectorService:
             log.info("detector.shutting_down")
 
     async def _start_camera_detections(self, detector, publisher, zone_manager, face_recognizer):
-        """Start detection tasks for all enabled cameras."""
+        """Start detection tasks for enabled cameras, stop tasks for disabled ones."""
         async with self.db_pool.acquire() as conn:
             cameras = await conn.fetch(
                 "SELECT id, name, rtsp_sub_stream, rtsp_main_stream, camera_type FROM cameras WHERE is_enabled = true AND is_online = true"
             )
+
+        # Build set of camera IDs that SHOULD be running
+        enabled_ids = {str(cam["id"]) for cam in cameras}
+
+        # Stop tasks for cameras that are no longer enabled/online
+        to_remove = [cid for cid in self.camera_tasks if cid not in enabled_ids]
+        for cid in to_remove:
+            log.info("detector.camera_stopped", camera_id=cid, reason="disabled_or_offline")
+            self.camera_tasks[cid].cancel()
+            del self.camera_tasks[cid]
 
         for cam in cameras:
             cam_id = str(cam["id"])
@@ -188,9 +199,24 @@ class DetectorService:
         loop = asyncio.get_event_loop()
         frame_count = 0
         face_every_n = 3  # Run face recognition every N frames (balance speed vs detection)
+        enable_check_interval = self.detection_fps * 10  # Check is_enabled every ~10 seconds
 
         while self.running:
             try:
+                # Periodically verify camera is still enabled in DB
+                if frame_count > 0 and frame_count % enable_check_interval == 0:
+                    try:
+                        async with self.db_pool.acquire() as conn:
+                            still_enabled = await conn.fetchval(
+                                "SELECT is_enabled FROM cameras WHERE id = $1",
+                                _uuid.UUID(camera_id)
+                            )
+                        if not still_enabled:
+                            log.info("detector.camera_disabled", camera_id=camera_id, name=camera_name)
+                            break
+                    except Exception:
+                        pass  # Don't crash the loop on DB errors
+
                 # Grab frame in thread pool (blocking I/O)
                 frame = await loop.run_in_executor(self.thread_pool, grabber.grab_frame)
 
@@ -412,6 +438,10 @@ class DetectorService:
                 await asyncio.sleep(5)
 
         grabber.release()
+        # Clean up task reference when loop ends
+        if camera_id in self.camera_tasks:
+            del self.camera_tasks[camera_id]
+        log.info("detector.camera_loop_ended", camera_id=camera_id, name=camera_name)
 
     async def _listen_camera_events(self, detector, publisher, zone_manager, face_recognizer):
         """Listen for camera add/remove events on Redis Stream."""
@@ -489,11 +519,13 @@ class DetectorService:
                 log.warning("detector.cleanup_error", error=str(e))
 
     async def _refresh_loop(self, detector, publisher, zone_manager, face_recognizer):
-        """Periodically refresh camera list and zones."""
+        """Periodically refresh camera list — starts new, stops disabled."""
         while self.running:
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)  # Check every 30s (was 60s)
             try:
                 await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
+                active = len(self.camera_tasks)
+                log.debug("detector.refresh", active_cameras=active)
             except Exception as e:
                 log.warning("detector.refresh_error", error=str(e))
 

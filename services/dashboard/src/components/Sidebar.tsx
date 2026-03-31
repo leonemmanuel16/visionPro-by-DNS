@@ -12,6 +12,7 @@ import {
   Database,
   Flame,
   Route,
+  HeartPulse,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useRef } from "react";
@@ -25,6 +26,7 @@ const navItems = [
   { href: "/dashboard/heatmap", label: "Mapa de Calor", icon: Flame },
   { href: "/dashboard/traffic", label: "Trafico", icon: Route },
   { href: "/dashboard/database", label: "Base de Datos", icon: Database },
+  { href: "/dashboard/health", label: "Salud del Sistema", icon: HeartPulse },
   { href: "/dashboard/settings", label: "Configuracion", icon: Settings },
 ];
 
