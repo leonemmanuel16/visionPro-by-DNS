@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Loader2, WifiOff } from "lucide-react";
 import { getGo2rtcUrl } from "@/lib/urls";
 
@@ -8,91 +8,101 @@ interface SnapshotPlayerProps {
   cameraName: string;
   isOnline?: boolean;
   className?: string;
-  /** Ignored — kept for API compat. MJPEG streams continuously. */
+  /** Refresh interval in milliseconds (default: 1000ms) */
   intervalMs?: number;
 }
 
 /**
- * MJPEG stream player for camera grid.
+ * Fast snapshot player for camera grid.
  *
- * Uses go2rtc's native MJPEG endpoint: /api/stream.mjpeg?src={stream}
- * The browser renders a continuous JPEG stream with ~0.5-1s latency.
- * No WebRTC negotiation, no JavaScript decoding, no buffering.
- * Just a native <img> tag that updates itself.
- *
- * Much lighter than WebRTC for 19+ cameras simultaneously.
+ * Fetches JPEG frames from go2rtc at /api/frame.jpeg every ~1 second.
+ * Uses double-buffering: loads next image in background, swaps on load.
+ * Result: smooth ~1 FPS view with no flicker, 640px wide, very lightweight.
  */
 export function SnapshotPlayer({
   cameraName,
   isOnline = true,
   className = "",
+  intervalMs = 1000,
 }: SnapshotPlayerProps) {
+  const [currentSrc, setCurrentSrc] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
-  const retryCountRef = useRef(0);
-  const retryTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const MAX_RETRIES = 3;
+  const mountedRef = useRef(true);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const failsRef = useRef(0);
+  const activeStreamRef = useRef<string>("");
+  const loadingRef = useRef(false);
 
   const go2rtcUrl = getGo2rtcUrl();
 
-  // Stream candidates — sub-stream first (640x360, lighter)
   const candidates = [
     `${cameraName}_sub`,
     `${cameraName}`,
   ];
 
+  const fetchFrame = useCallback(() => {
+    if (!mountedRef.current || !isOnline || loadingRef.current) return;
+    loadingRef.current = true;
+
+    const stream = activeStreamRef.current || candidates[0];
+    const img = new Image();
+    const url = `${go2rtcUrl}/api/frame.jpeg?src=${stream}&width=640&t=${Date.now()}`;
+
+    img.onload = () => {
+      if (!mountedRef.current) return;
+      loadingRef.current = false;
+      setCurrentSrc(url);
+      setLoading(false);
+      setError(false);
+      failsRef.current = 0;
+      activeStreamRef.current = stream;
+    };
+
+    img.onerror = () => {
+      if (!mountedRef.current) return;
+      loadingRef.current = false;
+      failsRef.current++;
+
+      // Try fallback stream
+      if (failsRef.current === 1 && stream === candidates[0]) {
+        activeStreamRef.current = candidates[1];
+        fetchFrame();
+        return;
+      }
+
+      if (failsRef.current >= 5) {
+        setError(true);
+        setLoading(false);
+      }
+    };
+
+    img.src = url;
+  }, [go2rtcUrl, cameraName, isOnline]);
+
   useEffect(() => {
+    mountedRef.current = true;
+    failsRef.current = 0;
+    activeStreamRef.current = "";
+    loadingRef.current = false;
+
     if (!isOnline) {
       setLoading(false);
       setError(false);
-      setStreamUrl(null);
       return;
     }
 
-    // Try first candidate (sub-stream)
-    retryCountRef.current = 0;
-    const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}&width=640`;
-    setStreamUrl(url);
-    setLoading(true);
-    setError(false);
+    // First frame
+    fetchFrame();
+
+    // Continuous refresh
+    timerRef.current = setInterval(fetchFrame, intervalMs);
 
     return () => {
-      setStreamUrl(null);
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      mountedRef.current = false;
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [cameraName, isOnline, go2rtcUrl]);
-
-  const handleLoad = () => {
-    setLoading(false);
-    setError(false);
-    retryCountRef.current = 0;
-  };
-
-  const handleError = () => {
-    retryCountRef.current++;
-
-    if (retryCountRef.current === 1) {
-      // First fail: try main stream instead of sub
-      const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[1]}&width=640`;
-      setStreamUrl(url);
-      return;
-    }
-
-    if (retryCountRef.current <= MAX_RETRIES) {
-      // Retry with delay
-      retryTimerRef.current = setTimeout(() => {
-        const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}&width=640&t=${Date.now()}`;
-        setStreamUrl(url);
-      }, 3000);
-      return;
-    }
-
-    // All retries exhausted
-    setError(true);
-    setLoading(false);
-  };
+  }, [cameraName, isOnline, intervalMs, fetchFrame]);
 
   if (!isOnline) {
     return (
@@ -107,19 +117,16 @@ export function SnapshotPlayer({
 
   return (
     <div className={`relative bg-black overflow-hidden ${className}`}>
-      {streamUrl && !error && (
+      {currentSrc && !error && (
         <img
-          ref={imgRef}
-          src={streamUrl}
+          src={currentSrc}
           alt={cameraName}
           className="w-full h-full object-contain"
           draggable={false}
-          onLoad={handleLoad}
-          onError={handleError}
         />
       )}
 
-      {loading && (
+      {loading && !currentSrc && (
         <div className="absolute inset-0 flex items-center justify-center">
           <Loader2 className="h-6 w-6 text-blue-400 animate-spin" />
         </div>
