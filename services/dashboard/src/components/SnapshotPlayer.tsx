@@ -53,7 +53,7 @@ export function SnapshotPlayer({
 
     // Try first candidate (sub-stream)
     retryCountRef.current = 0;
-    const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}`;
+    const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}&width=640`;
     setStreamUrl(url);
     setLoading(true);
     setError(false);
@@ -75,7 +75,7 @@ export function SnapshotPlayer({
 
     if (retryCountRef.current === 1) {
       // First fail: try main stream instead of sub
-      const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[1]}`;
+      const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[1]}&width=640`;
       setStreamUrl(url);
       return;
     }
@@ -83,7 +83,7 @@ export function SnapshotPlayer({
     if (retryCountRef.current <= MAX_RETRIES) {
       // Retry with delay
       retryTimerRef.current = setTimeout(() => {
-        const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}&t=${Date.now()}`;
+        const url = `${go2rtcUrl}/api/stream.mjpeg?src=${candidates[0]}&width=640&t=${Date.now()}`;
         setStreamUrl(url);
       }, 3000);
       return;
