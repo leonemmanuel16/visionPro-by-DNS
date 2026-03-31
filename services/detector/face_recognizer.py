@@ -16,8 +16,9 @@ log = structlog.get_logger()
 
 # Threshold for face match (lower = stricter)
 # 0.6 = too permissive (confuses different people)
-# 0.45 = strict (fewer false positives, may miss some matches)
-FACE_MATCH_THRESHOLD = 0.45
+# 0.45 = still had false positives with low-quality reference photos
+# 0.38 = very strict (requires clear, high-quality reference photos)
+FACE_MATCH_THRESHOLD = 0.38
 
 
 @dataclass
@@ -279,21 +280,39 @@ class FaceRecognizer:
         face_locations, face_encodings = result
 
         # Compare each detected face against known faces
+        # Use voting: count how many embeddings per person match below threshold
         for encoding in face_encodings:
-            best_match = None
-            best_distance = FACE_MATCH_THRESHOLD
+            # Collect all distances per person
+            person_votes: dict[str, list[float]] = {}
+            person_names: dict[str, str] = {}
 
             for person_id, name, known_encoding in self._known_cache:
-                # Compute euclidean distance
-                distance = np.linalg.norm(encoding - known_encoding)
+                distance = float(np.linalg.norm(encoding - known_encoding))
+                person_names[person_id] = name
+                if person_id not in person_votes:
+                    person_votes[person_id] = []
+                if distance < FACE_MATCH_THRESHOLD:
+                    person_votes[person_id].append(distance)
 
-                if distance < best_distance:
-                    best_distance = distance
+            # Find best candidate: prefer person with most votes, then lowest avg distance
+            best_match = None
+            best_score = (0, 999.0)  # (vote_count, avg_distance) — higher votes, lower distance wins
+
+            for person_id, distances in person_votes.items():
+                if not distances:
+                    continue
+                vote_count = len(distances)
+                avg_distance = sum(distances) / len(distances)
+
+                # Require at least 1 matching embedding
+                # But log a warning if only 1 vote (weak match)
+                if (vote_count, -avg_distance) > (best_score[0], -best_score[1]):
+                    best_score = (vote_count, avg_distance)
                     best_match = FaceMatch(
                         person_id=person_id,
-                        person_name=name,
-                        distance=distance,
-                        confidence=max(0, 1.0 - distance),
+                        person_name=person_names[person_id],
+                        distance=avg_distance,
+                        confidence=max(0, 1.0 - avg_distance),
                     )
 
             if best_match:
@@ -302,6 +321,7 @@ class FaceRecognizer:
                     person=best_match.person_name,
                     distance=f"{best_match.distance:.3f}",
                     confidence=f"{best_match.confidence:.1%}",
+                    votes=best_score[0],
                 )
                 return best_match
 
