@@ -10,6 +10,8 @@ interface SnapshotPlayerProps {
   className?: string;
   /** Refresh interval in milliseconds (default: 1000ms) */
   intervalMs?: number;
+  /** Image width in pixels (default: 640) */
+  width?: number;
 }
 
 /**
@@ -24,6 +26,7 @@ export function SnapshotPlayer({
   isOnline = true,
   className = "",
   intervalMs = 1000,
+  width = 640,
 }: SnapshotPlayerProps) {
   const [currentSrc, setCurrentSrc] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -47,7 +50,7 @@ export function SnapshotPlayer({
 
     const stream = activeStreamRef.current || candidates[0];
     const img = new Image();
-    const url = `${go2rtcUrl}/api/frame.jpeg?src=${stream}&width=640&t=${Date.now()}`;
+    const url = `${go2rtcUrl}/api/frame.jpeg?src=${stream}&width=${width}&t=${Date.now()}`;
 
     img.onload = () => {
       if (!mountedRef.current) return;

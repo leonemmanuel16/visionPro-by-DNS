@@ -92,6 +92,7 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
                     isOnline={camera.is_online}
                     className="aspect-video"
                     intervalMs={gridSize === 2 ? 150 : gridSize === 3 ? 250 : 500}
+                    width={gridSize === 2 ? 640 : gridSize === 3 ? 420 : 280}
                   />
                   {camera.is_online && detections.length > 0 && (
                     <DetectionOverlay detections={detections} />
