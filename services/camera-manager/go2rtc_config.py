@@ -35,7 +35,7 @@ class Go2RTCConfigManager:
             async with self.db.acquire() as conn:
                 cameras = await conn.fetch(
                     """SELECT id, name, ip_address, rtsp_main_stream, rtsp_sub_stream
-                       FROM cameras WHERE is_enabled = true AND rtsp_main_stream IS NOT NULL"""
+                       FROM cameras WHERE rtsp_main_stream IS NOT NULL"""
                 )
         except Exception as e:
             log.error("go2rtc_config.db_error", error=str(e))
