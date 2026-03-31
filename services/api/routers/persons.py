@@ -878,6 +878,7 @@ async def import_nvr_faces(
                     pic_url = pic_url.replace("&amp;", "&")
                     try:
                         photo_resp = await client.get(pic_url, auth=auth, timeout=15.0)
+                        photo_error = f"status={photo_resp.status_code} size={len(photo_resp.content)}"
                         if photo_resp.status_code == 200 and len(photo_resp.content) > 1000:
                             photo_bytes = photo_resp.content
                             photo_id = str(uuid.uuid4())
