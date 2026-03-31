@@ -136,7 +136,7 @@ export function DetectionOverlay({
             )}
 
             {/* Bottom label: clothing colors */}
-            {attrs && (attrs.upper_color !== "desconocido" || attrs.lower_color !== "desconocido") && (
+            {attrs && attrs.upper_rgb && attrs.lower_rgb && (attrs.upper_color !== "desconocido" || attrs.lower_color !== "desconocido") && (
               <div
                 className="absolute left-0 flex items-center gap-1 px-1.5 py-0.5 rounded-t-sm"
                 style={{
