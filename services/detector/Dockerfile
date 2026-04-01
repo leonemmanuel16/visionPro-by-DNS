@@ -1,15 +1,16 @@
 # ============================================================
-# DNS Vision Pro — AI Detector (NVIDIA CUDA + YOLOv11)
-# Base: NVIDIA CUDA 12.4 runtime for GPU inference
+# DNS Vision Pro — AI Detector (NVIDIA CUDA + YOLO26 + TensorRT)
+# Base: NVIDIA CUDA 12.4 devel for TensorRT build + GPU inference
 # ============================================================
 
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/Monterrey
 
 # Install Python 3.11 + system deps
+# Note: cmake, gcc, g++ needed for onnxruntime-gpu and InsightFace compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
@@ -27,8 +28,11 @@ WORKDIR /app
 
 # Install PyTorch with CUDA 12.4 support first (large download, cached layer)
 RUN pip3 install --no-cache-dir \
-    torch==2.5.1 torchvision==0.20.1 \
+    torch>=2.5.1 torchvision>=0.20.1 \
     --index-url https://download.pytorch.org/whl/cu124
+
+# Install TensorRT (for optimized inference engine)
+RUN pip3 install --no-cache-dir tensorrt || true
 
 # Install remaining dependencies
 COPY requirements.txt .
@@ -36,7 +40,17 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Pre-download YOLO model at build time (faster startup)
-RUN python3 -c "from ultralytics import YOLO; YOLO('yolo11m.pt')" || true
+# Pre-download YOLO26s model and export TensorRT engine at build time
+# This takes 2-5 minutes but makes container startup instant
+RUN python3 -c "\
+from ultralytics import YOLO; \
+import torch; \
+m = YOLO('yolo26s.pt'); \
+if torch.cuda.is_available(): \
+    m.export(format='engine', half=True); \
+    print('TensorRT engine built successfully'); \
+else: \
+    print('No GPU at build time, TensorRT engine will be built at first run'); \
+" || echo "Model pre-build failed (will retry at runtime)"
 
 CMD ["python3", "main.py"]

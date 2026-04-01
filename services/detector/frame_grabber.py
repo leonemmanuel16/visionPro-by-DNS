@@ -1,10 +1,17 @@
-"""Frame Grabber - Pull frames from go2rtc RTSP streams."""
+"""Frame Grabber - Pull frames from go2rtc RTSP streams.
+
+Optimizations:
+- Hardware acceleration hint (CAP_PROP_HW_ACCELERATION)
+- Connection timeout (5s) for faster failure detection
+- Buffer size 1 for lowest latency
+"""
 
 import time
 
 import cv2
 import numpy as np
 import structlog
+import torch
 
 log = structlog.get_logger()
 
@@ -12,7 +19,8 @@ log = structlog.get_logger()
 class FrameGrabber:
     """Grabs frames from an RTSP stream via OpenCV."""
 
-    def __init__(self, stream_url: str, target_fps: int = 5, go2rtc_url: str = ""):
+    def __init__(self, stream_url: str, target_fps: int = 5, go2rtc_url: str = "",
+                 use_cuda: bool = False):
         self.stream_url = stream_url
         self.target_fps = target_fps
         self.frame_interval = 1.0 / target_fps
@@ -20,6 +28,7 @@ class FrameGrabber:
         self.last_grab_time = 0.0
         self.reconnect_delay = 1.0
         self.max_reconnect_delay = 30.0
+        self.use_cuda = use_cuda and torch.cuda.is_available()
 
     def _connect(self) -> bool:
         """Connect to the RTSP stream."""
@@ -32,9 +41,22 @@ class FrameGrabber:
             # Optimize for low latency
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+            # Connection timeout — fail fast instead of hanging
+            self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+            self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+
+            # Try hardware acceleration (NVDEC/VAAPI/etc.)
+            if self.use_cuda:
+                try:
+                    self.cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
+                    log.info("frame_grabber.hw_accel_requested")
+                except Exception:
+                    pass  # Not all OpenCV builds support this
+
             if self.cap.isOpened():
                 self.reconnect_delay = 1.0  # Reset backoff
-                log.info("frame_grabber.connected", url=self.stream_url[:50])
+                log.info("frame_grabber.connected", url=self.stream_url[:50],
+                         hw_accel=self.use_cuda)
                 return True
             else:
                 log.warning("frame_grabber.connect_failed", url=self.stream_url[:50])

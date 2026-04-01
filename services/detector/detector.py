@@ -1,8 +1,14 @@
-"""YOLO Detection Wrapper."""
+"""YOLO Detection Wrapper — YOLO26s + TensorRT FP16.
+
+YOLO26 is NMS-free (end-to-end), giving lower latency.
+TensorRT export compiles the model into an optimized engine for the specific GPU.
+FP16 half-precision gives ~2x speedup on NVIDIA GPUs with minimal accuracy loss.
+"""
 
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import structlog
@@ -23,7 +29,8 @@ class Detection:
 class YOLODetector:
     """YOLO inference wrapper with NVIDIA GPU acceleration.
 
-    Supports YOLOv8, v10, v11 models with automatic GPU detection.
+    Supports YOLO26, v11, v10, v8 models with automatic GPU detection.
+    Attempts TensorRT export for maximum performance, falls back to PyTorch FP16.
     Optimized for NVIDIA T1000 8GB and similar GPUs.
     """
 
@@ -43,16 +50,17 @@ class YOLODetector:
         19: "cow",
     }
 
-    # Fallback model order if primary fails (larger → smaller)
-    MODEL_FALLBACKS = ["yolo11s", "yolov10s", "yolov8n"]
+    # Fallback model order if primary fails (larger -> smaller)
+    MODEL_FALLBACKS = ["yolo26s", "yolo26n", "yolo11s"]
 
     def __init__(
         self,
-        model_name: str = "yolo11m",
+        model_name: str = "yolo26s",
         confidence: float = 0.5,
         device: str = "auto",
     ):
         self.confidence = confidence
+        self.model_name = model_name
 
         # Auto-detect device
         if device == "auto":
@@ -69,53 +77,107 @@ class YOLODetector:
 
         log.info("detector.loading_model", model=model_name, device=self.device)
 
-        # Try loading model with fallbacks (always load in FP32 first for safe fusing)
-        self.model = self._load_model_safe(model_name)
-        self.model.to(self.device)
+        # FP16 on CUDA — ~2x speedup on T1000 and similar GPUs
+        self.use_half = self.device == "cuda"
 
-        # FP32 mode — T1000 is fast enough without FP16 and avoids fuse() dtype issues
-        self.use_half = False
+        # Try loading model: TensorRT engine > PyTorch .pt with FP16
+        self.model = self._load_model(model_name)
 
         # Warm up (multiple passes for GPU to optimize kernels)
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         warmup_passes = 3 if self.device == "cuda" else 1
         for _ in range(warmup_passes):
-            self.model.predict(dummy, verbose=False)
+            self.model.predict(dummy, verbose=False, half=self.use_half)
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
-            log.info("detector.model_ready", device=self.device, gpu_mem_mb=f"{mem_used:.0f}")
+            log.info("detector.model_ready", device=self.device, gpu_mem_mb=f"{mem_used:.0f}",
+                     half=self.use_half, engine=self._using_engine)
         else:
             log.info("detector.model_ready", device=self.device)
 
-    def _load_model_safe(self, model_name: str) -> YOLO:
-        """Load YOLO model with PyTorch 2.6 safe unpickling fallback."""
+    def _load_model(self, model_name: str) -> YOLO:
+        """Load model: try TensorRT engine first, then PyTorch .pt with FP16."""
+        self._using_engine = False
         models_to_try = [model_name] + [m for m in self.MODEL_FALLBACKS if m != model_name]
 
         for name in models_to_try:
-            try:
-                log.info("detector.trying_model", model=name)
-                model = YOLO(f"{name}.pt")
-                log.info("detector.model_loaded", model=name)
-                return model
-            except Exception as e:
-                error_str = str(e)
-                if "Weights only load" in error_str or "UnpicklingError" in error_str:
-                    log.warning("detector.pytorch26_compat", model=name, error="weights_only restriction")
-                    # Try with weights_only=False via env var (PyTorch 2.6+)
+            # 1. Try pre-built TensorRT engine
+            if self.device == "cuda":
+                engine_path = Path(f"{name}.engine")
+                if engine_path.exists():
                     try:
-                        os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
-                        model = YOLO(f"{name}.pt")
-                        log.info("detector.model_loaded_unsafe", model=name)
+                        log.info("detector.loading_engine", model=name)
+                        model = YOLO(str(engine_path))
+                        self._using_engine = True
+                        log.info("detector.engine_loaded", model=name)
                         return model
-                    except Exception as e2:
-                        log.warning("detector.fallback_failed", model=name, error=str(e2))
-                        continue
-                else:
-                    log.warning("detector.load_failed", model=name, error=error_str)
-                    continue
+                    except Exception as e:
+                        log.warning("detector.engine_load_failed", model=name, error=str(e))
+
+            # 2. Try loading .pt and exporting to TensorRT
+            pt_model = self._load_pt_safe(name)
+            if pt_model is None:
+                continue
+
+            if self.device == "cuda":
+                engine_model = self._try_export_tensorrt(pt_model, name)
+                if engine_model is not None:
+                    return engine_model
+
+                # 3. Fallback: use PyTorch .pt with FP16
+                log.info("detector.using_pytorch_fp16", model=name)
+                pt_model.to(self.device)
+                if self.use_half:
+                    try:
+                        pt_model.model.half()
+                        log.info("detector.fp16_enabled", model=name)
+                    except Exception as e:
+                        log.warning("detector.fp16_failed", error=str(e))
+                        self.use_half = False
+                return pt_model
+            else:
+                return pt_model
 
         raise RuntimeError(f"Could not load any YOLO model. Tried: {models_to_try}")
+
+    def _load_pt_safe(self, model_name: str) -> YOLO | None:
+        """Load YOLO .pt model with PyTorch 2.6 safe unpickling fallback."""
+        try:
+            log.info("detector.trying_model", model=model_name)
+            model = YOLO(f"{model_name}.pt")
+            log.info("detector.model_loaded", model=model_name)
+            return model
+        except Exception as e:
+            error_str = str(e)
+            if "Weights only load" in error_str or "UnpicklingError" in error_str:
+                log.warning("detector.pytorch26_compat", model=model_name)
+                try:
+                    os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
+                    model = YOLO(f"{model_name}.pt")
+                    log.info("detector.model_loaded_unsafe", model=model_name)
+                    return model
+                except Exception as e2:
+                    log.warning("detector.fallback_failed", model=model_name, error=str(e2))
+            else:
+                log.warning("detector.load_failed", model=model_name, error=error_str)
+            return None
+
+    def _try_export_tensorrt(self, model: YOLO, model_name: str) -> YOLO | None:
+        """Try to export model to TensorRT engine. Returns loaded engine or None."""
+        try:
+            log.info("detector.exporting_tensorrt", model=model_name,
+                     msg="This may take 2-5 minutes on first run...")
+            engine_path = model.export(format="engine", half=True, device=0)
+            if engine_path and Path(engine_path).exists():
+                engine_model = YOLO(engine_path)
+                self._using_engine = True
+                log.info("detector.tensorrt_ready", model=model_name, engine=engine_path)
+                return engine_model
+        except Exception as e:
+            log.warning("detector.tensorrt_export_failed", model=model_name, error=str(e),
+                        msg="Falling back to PyTorch FP16")
+        return None
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """Run YOLO inference on a frame. Returns list of detections."""
@@ -125,7 +187,7 @@ class YOLODetector:
             frame,
             conf=self.confidence,
             verbose=False,
-            half=False,
+            half=self.use_half,
             classes=list(self.TARGET_CLASSES.keys()),
         )
 

@@ -43,20 +43,52 @@ def _bgr_to_name(bgr: np.ndarray) -> str:
 
 
 def _dominant_color(region: np.ndarray) -> tuple[str, tuple[int, int, int]]:
+    """Extract dominant color using HSV histogram (~10x faster than K-means)."""
     if region.size == 0 or region.shape[0] < 5 or region.shape[1] < 5:
         return "desconocido", (128, 128, 128)
     small = cv2.resize(region, (50, 50))
-    pixels = small.reshape(-1, 3).astype(np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    try:
-        _, labels, centers = cv2.kmeans(pixels, 3, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-    except cv2.error:
-        avg = pixels.mean(axis=0).astype(np.uint8)
-        return _bgr_to_name(avg), tuple(avg.tolist())
-    counts = np.bincount(labels.flatten(), minlength=3)
-    dominant_idx = counts.argmax()
-    dominant_bgr = centers[dominant_idx].astype(np.uint8)
-    return _bgr_to_name(dominant_bgr), tuple(dominant_bgr.tolist())
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+
+    h_channel = hsv[:, :, 0].flatten()
+    s_channel = hsv[:, :, 1].flatten()
+    v_channel = hsv[:, :, 2].flatten()
+
+    n_pixels = len(h_channel)
+    is_black = v_channel < 50
+    is_white = (s_channel < 30) & (v_channel > 200)
+    is_gray = (s_channel < 30) & (~is_white) & (~is_black)
+    is_chromatic = ~is_black & ~is_white & ~is_gray
+
+    n_black = np.count_nonzero(is_black)
+    n_white = np.count_nonzero(is_white)
+    n_gray = np.count_nonzero(is_gray)
+    n_chromatic = np.count_nonzero(is_chromatic)
+
+    achromatic_max = max(n_black, n_white, n_gray)
+    if achromatic_max > n_chromatic and achromatic_max > n_pixels * 0.3:
+        avg_bgr = small.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+        if n_black >= n_white and n_black >= n_gray:
+            return "negro", tuple(avg_bgr.tolist())
+        elif n_white >= n_gray:
+            return "blanco", tuple(avg_bgr.tolist())
+        else:
+            return "gris", tuple(avg_bgr.tolist())
+
+    if n_chromatic > 0:
+        chromatic_h = h_channel[is_chromatic]
+        hist = np.bincount(chromatic_h, minlength=181)
+        dominant_h = int(hist.argmax())
+
+        hue_mask = is_chromatic & (np.abs(h_channel.astype(int) - dominant_h) < 10)
+        if np.any(hue_mask):
+            pixels_bgr = small.reshape(-1, 3)[hue_mask]
+            avg_bgr = pixels_bgr.mean(axis=0).astype(np.uint8)
+        else:
+            avg_bgr = small.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+        return _bgr_to_name(avg_bgr), tuple(avg_bgr.tolist())
+
+    avg_bgr = small.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+    return _bgr_to_name(avg_bgr), tuple(avg_bgr.tolist())
 
 
 # ── Vehicle type classification ──────────────────────────────────────

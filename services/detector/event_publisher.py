@@ -221,6 +221,7 @@ class EventPublisher:
         camera_name: str,
         detection: TrackedDetection,
         frame: np.ndarray,
+        clip_path: str | None = None,
     ) -> None:
         """Process and publish a detection event."""
         self._cleanup_caches()
@@ -276,6 +277,8 @@ class EventPublisher:
             metadata = detection.metadata
 
         metadata["tracker_id"] = detection.tracker_id
+        if clip_path:
+            metadata["clip_path"] = clip_path
 
         if frame is not None:
             metadata["frame_width"] = int(frame.shape[1])
@@ -315,6 +318,7 @@ class EventPublisher:
             "confidence": f"{detection.confidence:.3f}",
             "snapshot_path": snapshot_path or "",
             "thumbnail_path": thumbnail_path or "",
+            "clip_path": clip_path or "",
             "occurred_at": now.isoformat(),
         }
         await self.redis.xadd("detection_events", event_data)

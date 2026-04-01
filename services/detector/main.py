@@ -25,6 +25,7 @@ from face_recognizer import FaceRecognizer
 from person_attributes import extract_person_attributes
 from vehicle_attributes import extract_vehicle_attributes
 from best_shot import BestShotSelector
+from ring_buffer import RingBuffer, create_clip, save_clip_to_minio
 
 structlog.configure(
     processors=[
@@ -51,11 +52,12 @@ class DetectorService:
         self.minio_endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
         self.minio_access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
         self.minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-        self.model_name = os.environ.get("MODEL_NAME", "yolov10n")
+        self.model_name = os.environ.get("MODEL_NAME", "yolo26s")
         self.detection_fps = int(os.environ.get("DETECTION_FPS", "5"))
         self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.5"))
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
         self.device = os.environ.get("DEVICE", "auto")
+        self.ring_buffer_seconds = int(os.environ.get("RING_BUFFER_SECONDS", "15"))
 
         self.db_pool: asyncpg.Pool | None = None
         self.redis: aioredis.Redis | None = None
@@ -158,10 +160,8 @@ class DetectorService:
                 if self.go2rtc_url:
                     rtsp_base = self.go2rtc_url.replace("http://", "rtsp://").replace(":1984", ":8554")
                     if is_fisheye:
-                        # Fisheye: use sub-stream (less distortion, YOLO works better)
                         stream_url = f"{rtsp_base}/cam_{cam_id_short}_sub"
                     else:
-                        # Normal cameras: use main stream (1080p) for better face recognition
                         stream_url = f"{rtsp_base}/cam_{cam_id_short}"
                 else:
                     if is_fisheye:
@@ -176,7 +176,7 @@ class DetectorService:
                             cam_config = json.loads(cam_config)
                         except Exception:
                             cam_config = {}
-                    detect_classes = cam_config.get("detect_classes", None)  # None = detect all
+                    detect_classes = cam_config.get("detect_classes", None)
 
                     task = asyncio.create_task(
                         self._detection_loop(
@@ -204,14 +204,19 @@ class DetectorService:
         zone_manager, face_recognizer, detect_classes=None
     ):
         """Main detection loop for a single camera."""
-        grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url)
+        grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url,
+                               use_cuda=(self.device != "cpu"))
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
-            min_bbox_area=12000,       # ~120x100 px minimum
-            min_person_height=120,     # Person at least 120px tall
-            max_hold_time=8.0,         # Max 8 seconds before forced publish
-            gone_frames=15,            # Object gone for 15 frames → publish
-            confidence_threshold=0.5,  # Minimum 50% confidence
+            min_bbox_area=12000,
+            min_person_height=120,
+            max_hold_time=8.0,
+            gone_frames=15,
+            confidence_threshold=0.5,
+        )
+        ring_buffer = RingBuffer(
+            max_seconds=self.ring_buffer_seconds,
+            fps=self.detection_fps,
         )
 
         # Load zones for this camera
@@ -220,8 +225,8 @@ class DetectorService:
         frame_interval = 1.0 / self.detection_fps
         loop = asyncio.get_event_loop()
         frame_count = 0
-        face_every_n = 3  # Run face recognition every N frames (balance speed vs detection)
-        enable_check_interval = self.detection_fps * 10  # Check is_enabled every ~10 seconds
+        face_every_n = 3
+        enable_check_interval = self.detection_fps * 10
 
         while self.running:
             try:
@@ -237,7 +242,7 @@ class DetectorService:
                             log.info("detector.camera_disabled", camera_id=camera_id, name=camera_name)
                             break
                     except Exception:
-                        pass  # Don't crash the loop on DB errors
+                        pass
 
                 # Grab frame in thread pool (blocking I/O)
                 frame = await loop.run_in_executor(self.thread_pool, grabber.grab_frame)
@@ -248,6 +253,9 @@ class DetectorService:
                     continue
 
                 log.debug("detector.frame_ok", camera=camera_name, shape=f"{frame.shape[1]}x{frame.shape[0]}")
+
+                # Push frame to ring buffer (for video clips)
+                ring_buffer.push(frame)
 
                 # Run detection in thread pool (CPU/GPU bound)
                 detections = await loop.run_in_executor(
@@ -308,7 +316,6 @@ class DetectorService:
                             pass
 
                     if det.label == "person" and run_face:
-                        # Skip tiny person bboxes (likely false positives)
                         bw = det.bbox[2] - det.bbox[0]
                         bh = det.bbox[3] - det.bbox[1]
                         if bw < 40 or bh < 80 or (bw * bh) < 5000:
@@ -316,14 +323,12 @@ class DetectorService:
                         try:
                             match = await face_recognizer.recognize(frame, det.bbox)
                             if match:
-                                # Attach person info to detection metadata
                                 if det.metadata is None:
                                     det.metadata = {}
                                 det.metadata["person_id"] = match.person_id
                                 det.metadata["person_name"] = match.person_name
                                 det.metadata["face_confidence"] = f"{match.confidence:.2f}"
                                 det.label = f"person:{match.person_name}"
-                                # Get face location for bounding box overlay
                                 face_result = face_recognizer.detect_and_encode(frame, det.bbox)
                                 if face_result:
                                     face_locs, _ = face_result
@@ -331,12 +336,10 @@ class DetectorService:
                                         det.metadata["face_bbox"] = face_locs[0]
                                         det.metadata["face_detected"] = True
                             else:
-                                # Try to save unknown face with thumbnail
                                 result = face_recognizer.detect_and_encode(frame, det.bbox)
                                 if result:
                                     face_locations, encodings = result
                                     if encodings:
-                                        # Mark that a face was detected (triggers event alert)
                                         if det.metadata is None:
                                             det.metadata = {}
                                         det.metadata["face_detected"] = True
@@ -354,7 +357,6 @@ class DetectorService:
                             log.debug("face_recognition.error", error=str(e))
 
                 # Publish real-time tracking positions via Redis pub/sub
-                # (every frame, no debounce — for live bounding box overlay)
                 if filtered:
                     h, w = frame.shape[:2]
                     tracks = []
@@ -362,7 +364,7 @@ class DetectorService:
                         x1, y1, x2, y2 = d.bbox
                         track = {
                             "id": f"t{d.tracker_id}",
-                            "label": d.label.split(":")[0],  # "person" not "person:Juan"
+                            "label": d.label.split(":")[0],
                             "confidence": round(d.confidence, 2),
                             "bbox": {
                                 "x": round(x1 / w * 100, 1),
@@ -378,14 +380,12 @@ class DetectorService:
                                 track["personName"] = pname
                             if d.metadata.get("face_bbox"):
                                 ft, fr, fb, fl = d.metadata["face_bbox"]
-                                # Approximate face bbox as upper 40% of person bounding box
                                 track["faceBbox"] = {
                                     "x": round(x1 / w * 100, 1),
                                     "y": round(y1 / h * 100, 1),
                                     "w": round((x2 - x1) / w * 100, 1),
                                     "h": round((y2 - y1) * 0.4 / h * 100, 1),
                                 }
-                        # Include attributes already computed
                         if hasattr(d, "metadata") and d.metadata:
                             attrs = {}
                             for attr_key in ("upper_color", "lower_color", "headgear",
@@ -407,7 +407,6 @@ class DetectorService:
                     )
 
                 # ── BEST-SHOT: Feed all detections, publish nothing yet ──
-                # Step 1: Feed every detection to the accumulator
                 best_shot.cleanup()
                 current_tracker_ids = set()
 
@@ -424,16 +423,15 @@ class DetectorService:
                         metadata=det.metadata or {},
                     )
 
-                # Step 2: Collect ready events (objects that left or timed out)
-                # This is where the ONE alert per object is published
+                # Step 2: Collect ready events — pass current_frame for snapshot
                 from tracker import TrackedDetection as TD
-                ready_events = best_shot.collect(camera_id, current_tracker_ids)
+                ready_events = best_shot.collect(camera_id, current_tracker_ids,
+                                                  current_frame=frame)
 
                 for buf, candidate in ready_events:
                     base_label = buf.label.split(":")[0]
 
                     # ONLY publish persons with face detected
-                    # Skip all vehicles, animals, and persons without face
                     if base_label != "person":
                         continue
                     if not candidate.metadata.get("face_detected"):
@@ -449,16 +447,33 @@ class DetectorService:
                         metadata=candidate.metadata,
                     )
 
+                    # Create video clip from ring buffer
+                    clip_path = None
+                    try:
+                        pre_frames = ring_buffer.get_pre_event_frames(seconds=10)
+                        if len(pre_frames) >= 5:
+                            clip_bytes = await loop.run_in_executor(
+                                self.thread_pool,
+                                create_clip, pre_frames, [], self.detection_fps
+                            )
+                            if clip_bytes:
+                                from datetime import datetime, timezone
+                                ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                                clip_path = await save_clip_to_minio(
+                                    publisher.minio, clip_bytes,
+                                    str(uuid.uuid4()) if 'uuid' in dir() else _uuid.uuid4().hex,
+                                    ts_str,
+                                )
+                    except Exception as e:
+                        log.debug("ring_buffer.clip_error", error=str(e))
+
                     await publisher.publish(
                         camera_id=camera_id,
                         camera_name=camera_name,
                         detection=best_det,
                         frame=candidate.frame,
+                        clip_path=clip_path,
                     )
-
-                # Person count summary — disabled to avoid alert spam
-                # The best-shot system handles individual person alerts
-                # person_dets = [d for d in filtered if d.label.startswith("person")]
 
                 await asyncio.sleep(frame_interval)
 
@@ -471,7 +486,6 @@ class DetectorService:
                 await asyncio.sleep(5)
 
         grabber.release()
-        # Clean up task reference when loop ends
         if camera_id in self.camera_tasks:
             del self.camera_tasks[camera_id]
         log.info("detector.camera_loop_ended", camera_id=camera_id, name=camera_name)
@@ -502,23 +516,14 @@ class DetectorService:
                 await asyncio.sleep(5)
 
     async def _cleanup_loop(self):
-        """Periodically clean up old events and expired face data.
-
-        Retention policy:
-        - Events: keep 90 days or max 10,000 events (whichever is reached first)
-        - Unknown faces: delete expired (>30 days)
-        - Dismissed faces: delete expired (>90 days)
-        """
+        """Periodically clean up old events and expired face data."""
         while self.running:
-            await asyncio.sleep(3600)  # Run every hour
+            await asyncio.sleep(3600)
             try:
                 async with self.db_pool.acquire() as conn:
-                    # 1. Delete events older than 90 days
                     deleted_old = await conn.execute(
                         "DELETE FROM events WHERE occurred_at < NOW() - INTERVAL '90 days'"
                     )
-
-                    # 2. If more than 10,000 events, keep only the newest 10,000
                     total = await conn.fetchval("SELECT COUNT(*) FROM events")
                     deleted_excess = 0
                     if total and total > 10000:
@@ -530,17 +535,12 @@ class DetectorService:
                             )
                         """)
                         deleted_excess = total - 10000
-
-                    # 3. Delete expired unknown faces
                     deleted_unknown = await conn.execute(
                         "DELETE FROM unknown_faces WHERE expires_at < NOW()"
                     )
-
-                    # 4. Delete expired dismissed faces
                     deleted_dismissed = await conn.execute(
                         "DELETE FROM dismissed_faces WHERE expires_at < NOW()"
                     )
-
                     log.info(
                         "detector.cleanup_done",
                         events_old=str(deleted_old).split()[-1] if deleted_old else "0",
@@ -554,7 +554,7 @@ class DetectorService:
     async def _refresh_loop(self, detector, publisher, zone_manager, face_recognizer):
         """Periodically refresh camera list — starts new, stops disabled."""
         while self.running:
-            await asyncio.sleep(30)  # Check every 30s (was 60s)
+            await asyncio.sleep(30)
             try:
                 await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
                 active = len(self.camera_tasks)

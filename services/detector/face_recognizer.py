@@ -1,4 +1,17 @@
-"""Face Recognition — Detect faces, compute embeddings, compare with DB."""
+"""Face Recognition — InsightFace (ONNX + GPU) for detection, embedding, and comparison.
+
+Replaces dlib/face_recognition with InsightFace which:
+- Uses ONNX Runtime with CUDA for GPU-accelerated inference
+- Produces 512-dim embeddings (more discriminative than dlib's 128-dim)
+- Uses cosine similarity instead of euclidean distance
+- Has better accuracy for surveillance (ArcFace model)
+
+DB MIGRATION REQUIRED:
+  ALTER TABLE face_embeddings ALTER COLUMN embedding TYPE vector(512);
+  ALTER TABLE unknown_faces ALTER COLUMN embedding TYPE vector(512);
+  ALTER TABLE dismissed_faces ALTER COLUMN embedding TYPE vector(512);
+  -- Then re-generate all existing embeddings (old 128-dim won't work with new 512-dim)
+"""
 
 import io
 import time
@@ -14,46 +27,67 @@ from minio import Minio
 
 log = structlog.get_logger()
 
-# Threshold for face match (lower = stricter)
-# 0.6 = too permissive (confuses different people)
-# 0.45 = still had false positives with low-quality reference photos
-# 0.38 = very strict (requires clear, high-quality reference photos)
-FACE_MATCH_THRESHOLD = 0.38
+# Cosine similarity threshold for face match (higher = stricter)
+# InsightFace embeddings are normalized, so cosine similarity ranges [0, 1]
+# 0.35 = good balance for surveillance: catches matches without excessive false positives
+# 0.25 = too permissive (confuses different people)
+# 0.45 = too strict (misses valid matches with angle/lighting variation)
+FACE_MATCH_THRESHOLD = 0.35
+
+# Embedding dimension for InsightFace (buffalo_l model)
+EMBEDDING_DIM = 512
 
 
 @dataclass
 class FaceMatch:
     person_id: str
     person_name: str
-    distance: float  # lower = better match
-    confidence: float  # 1 - distance
+    distance: float  # cosine similarity (higher = better match)
+    confidence: float  # same as distance for cosine similarity
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two vectors. Returns value in [-1, 1]."""
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 
 class FaceRecognizer:
-    """Recognizes faces by comparing face_recognition embeddings against pgvector DB."""
+    """Recognizes faces using InsightFace (ONNX + GPU) with pgvector DB."""
 
     def __init__(self, db_pool: asyncpg.Pool, minio_client: Minio | None = None):
         self.db = db_pool
         self.minio = minio_client
-        self._fr = None  # lazy import face_recognition
+        self._app = None  # InsightFace FaceAnalysis app
         self._known_cache: list[tuple[str, str, np.ndarray]] = []  # (person_id, name, embedding)
         self._cache_time: float = 0
         self._cache_ttl: float = 60.0  # refresh cache every 60s
         self._available = False
-        self._recent_saves: list[tuple[np.ndarray, float]] = []  # [(embedding, timestamp)] for short-term dedup
+        self._recent_saves: list[tuple[np.ndarray, float]] = []  # [(embedding, timestamp)]
         self._recent_save_ttl: float = 10.0  # seconds to keep recent saves in memory
         self._init_library()
         self._ensure_bucket()
 
     def _init_library(self):
-        """Try to import face_recognition. If not available, face recognition is disabled."""
+        """Try to import and initialize InsightFace. Falls back gracefully."""
         try:
-            import face_recognition
-            self._fr = face_recognition
+            from insightface.app import FaceAnalysis
+            self._app = FaceAnalysis(
+                name="buffalo_l",
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            self._app.prepare(ctx_id=0, det_size=(640, 640))
             self._available = True
-            log.info("face_recognizer.ready", library="face_recognition")
+            log.info("face_recognizer.ready", library="insightface", model="buffalo_l",
+                     embedding_dim=EMBEDDING_DIM)
         except ImportError:
-            log.warning("face_recognizer.disabled", reason="face_recognition library not installed")
+            log.warning("face_recognizer.disabled", reason="insightface library not installed")
+            self._available = False
+        except Exception as e:
+            log.warning("face_recognizer.init_failed", error=str(e))
             self._available = False
 
     def _ensure_bucket(self):
@@ -87,11 +121,15 @@ class FaceRecognizer:
             cache = []
             for row in rows:
                 try:
-                    # Parse pgvector text format "[0.1,0.2,...]" to numpy array
                     emb_str = row["embedding"]
                     emb_array = np.fromstring(emb_str.strip("[]"), sep=",", dtype=np.float64)
-                    if len(emb_array) == 128:
+                    if len(emb_array) == EMBEDDING_DIM:
                         cache.append((str(row["id"]), row["name"], emb_array))
+                    elif len(emb_array) == 128:
+                        # Legacy dlib embeddings — skip with warning
+                        log.warning("face_recognizer.legacy_embedding",
+                                    person_id=str(row["id"]),
+                                    msg="128-dim embedding found, needs re-generation with InsightFace")
                 except Exception as e:
                     log.warning("face_recognizer.parse_embedding_error", error=str(e))
 
@@ -103,22 +141,20 @@ class FaceRecognizer:
             log.warning("face_recognizer.cache_refresh_failed", error=str(e))
 
     def detect_and_encode(self, frame: np.ndarray, person_bbox: tuple) -> tuple[list, list] | None:
-        """Detect faces within a person bounding box and return encodings.
+        """Detect faces within a person bounding box and return embeddings.
 
-        Strategy:
-        1. For large person bboxes (>200px wide): crop upper half + upscale, use HOG
-        2. For small bboxes: run face detection on a wide region of the original
-           frame (no upscaling) to preserve native resolution, then use CNN model
-           for better small-face detection
+        Uses InsightFace which does detection + alignment + embedding in one call.
 
         Args:
             frame: Full BGR frame from camera
             person_bbox: (x1, y1, x2, y2) of the detected person
 
         Returns:
-            (face_locations, face_encodings) or None if no face found
+            (face_bboxes, face_embeddings) or None if no face found
+            face_bboxes: list of (top, right, bottom, left) tuples (dlib-compatible format)
+            face_embeddings: list of 512-dim numpy arrays
         """
-        if not self._available:
+        if not self._available or self._app is None:
             return None
 
         x1, y1, x2, y2 = [int(c) for c in person_bbox]
@@ -132,136 +168,56 @@ class FaceRecognizer:
         person_w = x2 - x1
         person_h = y2 - y1
 
-        if person_w >= 200:
-            # Large bbox: original crop strategy works fine
-            return self._detect_face_crop(frame, x1, y1, x2, y2, h, w)
-        else:
-            # Small bbox: use wide native-resolution region
-            return self._detect_face_wide(frame, x1, y1, x2, y2, h, w, person_w, person_h)
+        # Crop upper 60% of person (head + torso area)
+        head_y2 = y1 + int(person_h * 0.6)
+        crop = frame[y1:head_y2, x1:x2]
 
-    def _detect_face_crop(self, frame, x1, y1, x2, y2, h, w):
-        """Face detection for large person bboxes using upper-half crop."""
-        person_h = y2 - y1
-        head_y2 = y1 + int(person_h * 0.5)
-        head_crop = frame[y1:head_y2, x1:x2]
-
-        crop_h, crop_w = head_crop.shape[:2]
-        if crop_h < 10 or crop_w < 10:
+        crop_h, crop_w = crop.shape[:2]
+        if crop_h < 20 or crop_w < 20:
             return None
 
-        if crop_w < 300:
-            scale = 300 / crop_w
-            head_crop = cv2.resize(head_crop, (int(crop_w * scale), int(crop_h * scale)), interpolation=cv2.INTER_CUBIC)
-
-        rgb_crop = np.ascontiguousarray(head_crop[:, :, ::-1])
+        # Upscale small crops for better detection
+        if crop_w < 200:
+            scale = 200 / crop_w
+            crop = cv2.resize(crop, (int(crop_w * scale), int(crop_h * scale)),
+                              interpolation=cv2.INTER_CUBIC)
 
         try:
-            face_locations = self._fr.face_locations(rgb_crop, number_of_times_to_upsample=1, model="hog")
-            if not face_locations:
+            # InsightFace expects BGR (same as OpenCV) — no conversion needed
+            faces = self._app.get(crop)
+
+            if not faces:
                 return None
 
-            # Validate face size: reject faces that are too small or have
-            # unrealistic proportions (likely false positives)
-            valid_faces = []
-            for (top, right, bottom, left) in face_locations:
-                fw = right - left
-                fh = bottom - top
-                aspect = fh / fw if fw > 0 else 0
-                if fw >= 30 and fh >= 30 and 0.8 < aspect < 2.0:
-                    valid_faces.append((top, right, bottom, left))
-                else:
-                    log.debug("face_recognizer.face_rejected", size=f"{fw}x{fh}", aspect=f"{aspect:.2f}")
+            face_bboxes = []
+            face_embeddings = []
 
-            if not valid_faces:
-                return None
-
-            face_encodings = self._fr.face_encodings(rgb_crop, known_face_locations=valid_faces)
-            if not face_encodings:
-                return None
-            log.info("face_recognizer.face_detected", faces=len(valid_faces), method="crop")
-            return valid_faces, face_encodings
-        except Exception as e:
-            log.warning("face_recognizer.detect_error", error=str(e))
-            return None
-
-    def _detect_face_wide(self, frame, x1, y1, x2, y2, h, w, person_w, person_h):
-        """Face detection for small person bboxes using a wide native-res region.
-
-        Instead of upscaling a tiny crop (which blurs the face), we take a large
-        region of the original frame centered on the person. This preserves the
-        native camera resolution and gives the face detector more context.
-        """
-        # Take a region 4x wider and 2x taller than the person bbox (capped at frame)
-        cx = (x1 + x2) // 2
-        cy = y1 + int(person_h * 0.3)  # bias toward head
-        region_w = max(person_w * 4, 400)
-        region_h = max(person_h * 2, 300)
-
-        rx1 = max(0, cx - region_w // 2)
-        rx2 = min(w, cx + region_w // 2)
-        ry1 = max(0, cy - region_h // 2)
-        ry2 = min(h, cy + region_h // 2)
-
-        region = frame[ry1:ry2, rx1:rx2]
-        region_h_actual, region_w_actual = region.shape[:2]
-        if region_h_actual < 20 or region_w_actual < 20:
-            return None
-
-        rgb_region = np.ascontiguousarray(region[:, :, ::-1])
-
-        try:
-            # Use CNN model for better small-face detection (uses GPU if available)
-            try:
-                face_locations = self._fr.face_locations(rgb_region, number_of_times_to_upsample=1, model="cnn")
-            except Exception:
-                # CNN not available (no GPU dlib), fall back to HOG with more upsamples
-                face_locations = self._fr.face_locations(rgb_region, number_of_times_to_upsample=2, model="hog")
-
-            if not face_locations:
-                log.debug("face_recognizer.no_face_in_region",
-                          region_size=f"{region_w_actual}x{region_h_actual}",
-                          person_size=f"{person_w}x{person_h}")
-                return None
-
-            # Filter: only keep faces that overlap with the person bbox
-            # Convert person bbox to region-relative coordinates
-            rel_x1 = x1 - rx1
-            rel_y1 = y1 - ry1
-            rel_x2 = x2 - rx1
-            rel_y2 = y2 - ry1
-
-            matched_faces = []
-            for (top, right, bottom, left) in face_locations:
-                face_h = bottom - top
-                face_w = right - left
-                # Skip tiny detections — not real faces
-                if face_h < 30 or face_w < 30:
+            for face in faces:
+                # Validate face size
+                fb = face.bbox  # [x1, y1, x2, y2]
+                fw = fb[2] - fb[0]
+                fh = fb[3] - fb[1]
+                if fw < 20 or fh < 20:
                     continue
-                face_cx = (left + right) // 2
-                face_cy = (top + bottom) // 2
-                # Check if face center is within or near the person bbox
-                if (rel_x1 - 20 <= face_cx <= rel_x2 + 20 and
-                        rel_y1 - 20 <= face_cy <= rel_y2 + 20):
-                    matched_faces.append((top, right, bottom, left))
 
-            if not matched_faces:
-                log.debug("face_recognizer.face_outside_bbox", faces_found=len(face_locations))
+                # Convert to (top, right, bottom, left) format for compatibility
+                face_loc = (int(fb[1]), int(fb[2]), int(fb[3]), int(fb[0]))
+                face_bboxes.append(face_loc)
+                face_embeddings.append(face.embedding)
+
+            if not face_bboxes:
                 return None
 
-            face_encodings = self._fr.face_encodings(rgb_region, known_face_locations=matched_faces)
-            if not face_encodings:
-                return None
-
-            log.info("face_recognizer.face_detected", faces=len(matched_faces),
-                     method="wide_region", region_size=f"{region_w_actual}x{region_h_actual}")
-            return matched_faces, face_encodings
+            log.info("face_recognizer.face_detected", faces=len(face_bboxes),
+                     method="insightface")
+            return face_bboxes, face_embeddings
 
         except Exception as e:
             log.warning("face_recognizer.detect_error", error=str(e))
             return None
 
     async def recognize(self, frame: np.ndarray, person_bbox: tuple) -> FaceMatch | None:
-        """Detect face in person crop, compare with known faces.
+        """Detect face in person crop, compare with known faces using cosine similarity.
 
         Returns FaceMatch if known person found, None otherwise.
         """
@@ -279,47 +235,44 @@ class FaceRecognizer:
 
         face_locations, face_encodings = result
 
-        # Compare each detected face against known faces
-        # Use voting: count how many embeddings per person match below threshold
+        # Compare each detected face against known faces using cosine similarity
         for encoding in face_encodings:
-            # Collect all distances per person
-            person_votes: dict[str, list[float]] = {}
+            # Collect best similarities per person
+            person_scores: dict[str, list[float]] = {}
             person_names: dict[str, str] = {}
 
             for person_id, name, known_encoding in self._known_cache:
-                distance = float(np.linalg.norm(encoding - known_encoding))
+                similarity = _cosine_similarity(encoding, known_encoding)
                 person_names[person_id] = name
-                if person_id not in person_votes:
-                    person_votes[person_id] = []
-                if distance < FACE_MATCH_THRESHOLD:
-                    person_votes[person_id].append(distance)
+                if person_id not in person_scores:
+                    person_scores[person_id] = []
+                if similarity >= FACE_MATCH_THRESHOLD:
+                    person_scores[person_id].append(similarity)
 
-            # Find best candidate: prefer person with most votes, then lowest avg distance
+            # Find best candidate: most votes, then highest avg similarity
             best_match = None
-            best_score = (0, 999.0)  # (vote_count, avg_distance) — higher votes, lower distance wins
+            best_score = (0, 0.0)  # (vote_count, avg_similarity)
 
-            for person_id, distances in person_votes.items():
-                if not distances:
+            for person_id, similarities in person_scores.items():
+                if not similarities:
                     continue
-                vote_count = len(distances)
-                avg_distance = sum(distances) / len(distances)
+                vote_count = len(similarities)
+                avg_sim = sum(similarities) / len(similarities)
 
-                # Require at least 1 matching embedding
-                # But log a warning if only 1 vote (weak match)
-                if (vote_count, -avg_distance) > (best_score[0], -best_score[1]):
-                    best_score = (vote_count, avg_distance)
+                if (vote_count, avg_sim) > best_score:
+                    best_score = (vote_count, avg_sim)
                     best_match = FaceMatch(
                         person_id=person_id,
                         person_name=person_names[person_id],
-                        distance=avg_distance,
-                        confidence=max(0, 1.0 - avg_distance),
+                        distance=avg_sim,  # cosine similarity (higher = better)
+                        confidence=avg_sim,
                     )
 
             if best_match:
                 log.info(
                     "face_recognizer.match",
                     person=best_match.person_name,
-                    distance=f"{best_match.distance:.3f}",
+                    similarity=f"{best_match.distance:.3f}",
                     confidence=f"{best_match.confidence:.1%}",
                     votes=best_score[0],
                 )
@@ -329,16 +282,16 @@ class FaceRecognizer:
 
     async def get_encoding(self, frame: np.ndarray) -> np.ndarray | None:
         """Get face encoding from a photo (for registration)."""
-        if not self._available:
+        if not self._available or self._app is None:
             return None
 
-        rgb = frame[:, :, ::-1]
         try:
-            locations = self._fr.face_locations(rgb, model="hog")
-            if not locations:
+            # InsightFace expects BGR
+            faces = self._app.get(frame)
+            if not faces:
                 return None
-            encodings = self._fr.face_encodings(rgb, locations)
-            return encodings[0] if encodings else None
+            # Return the first (largest) face embedding
+            return faces[0].embedding
         except Exception as e:
             log.warning("face_recognizer.encoding_error", error=str(e))
             return None
@@ -346,7 +299,7 @@ class FaceRecognizer:
     def _save_face_thumbnail(
         self, frame: np.ndarray, person_bbox: tuple, face_location: tuple | None = None
     ) -> str | None:
-        """Crop and save face thumbnail to MinIO.  Returns object path or None."""
+        """Crop and save face thumbnail to MinIO. Returns object path or None."""
         if not self.minio:
             return None
         try:
@@ -356,15 +309,13 @@ class FaceRecognizer:
             x2, y2 = min(w, x2), min(h, y2)
 
             if face_location:
-                # face_location is (top, right, bottom, left) WITHIN the crop
+                # face_location is (top, right, bottom, left)
                 ft, fr, fb, fl = face_location
                 face_h = fb - ft
                 face_w = fr - fl
-                # Reject tiny "faces" — likely false positives
                 if face_h < 30 or face_w < 30:
                     log.debug("face_recognizer.face_too_small", face_h=face_h, face_w=face_w)
                     return None
-                # Add padding around face (50% for better context)
                 pad_h = int(face_h * 0.5)
                 pad_w = int(face_w * 0.5)
                 crop = frame[
@@ -372,14 +323,12 @@ class FaceRecognizer:
                     max(0, x1 + fl - pad_w): min(w, x1 + fr + pad_w),
                 ]
             else:
-                # Use upper 40% of person bbox (head area)
                 head_h = int((y2 - y1) * 0.4)
                 crop = frame[y1: y1 + head_h, x1: x2]
 
             if crop.size == 0:
                 return None
 
-            # Resize to 150x150 for consistent thumbnails
             crop = cv2.resize(crop, (150, 150))
 
             _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -403,7 +352,7 @@ class FaceRecognizer:
                     content_type="image/jpeg",
                 )
             except Exception:
-                pass  # Full snapshot is optional
+                pass
 
             return f"faces/{object_name}"
         except Exception as e:
@@ -420,19 +369,17 @@ class FaceRecognizer:
     ) -> None:
         """Save an unknown face to the DB for later identification.
 
-        Now also saves a cropped face thumbnail to MinIO.
+        Saves a cropped face thumbnail to MinIO.
         Includes cooldown per camera to avoid flooding with saves.
         """
         try:
             # Short-term dedup: skip if we just saved a very similar face recently
             now = time.monotonic()
-            # Clean expired entries
             self._recent_saves = [(emb, t) for emb, t in self._recent_saves if now - t < self._recent_save_ttl]
-            # Check if this encoding was recently saved
             for saved_emb, saved_time in self._recent_saves:
-                dist = np.linalg.norm(encoding - saved_emb)
-                if dist < 0.5:
-                    log.debug("face_recognizer.save_debounced", distance=f"{dist:.3f}")
+                sim = _cosine_similarity(encoding, saved_emb)
+                if sim > 0.5:  # very similar face
+                    log.debug("face_recognizer.save_debounced", similarity=f"{sim:.3f}")
                     return
 
             # Save thumbnail image
@@ -464,7 +411,7 @@ class FaceRecognizer:
                     log.debug("face_recognizer.known_face_skipped", camera_id=camera_id)
                     return
 
-                # Check if similar unknown face already exists (distance < 0.65)
+                # Check if similar unknown face already exists
                 existing = await conn.fetchval("""
                     SELECT id FROM unknown_faces
                     WHERE embedding <-> $1::vector < 0.55
@@ -472,7 +419,6 @@ class FaceRecognizer:
                 """, emb_str)
 
                 if existing:
-                    # Update existing — also update thumbnail if we have a better one
                     if thumbnail_path:
                         await conn.execute("""
                             UPDATE unknown_faces
@@ -487,13 +433,13 @@ class FaceRecognizer:
                             WHERE id = $1
                         """, existing)
                 else:
-                    # Insert new
                     await conn.execute("""
                         INSERT INTO unknown_faces (embedding, thumbnail_path, camera_id)
                         VALUES ($1::vector, $2, $3)
                     """, emb_str, thumbnail_path, uuid.UUID(camera_id) if camera_id else None)
 
             self._recent_saves.append((encoding, now))
-            log.info("face_recognizer.unknown_saved", camera_id=camera_id, thumbnail=thumbnail_path, is_new=not existing)
+            log.info("face_recognizer.unknown_saved", camera_id=camera_id,
+                     thumbnail=thumbnail_path, is_new=not existing)
         except Exception as e:
             log.warning("face_recognizer.save_unknown_failed", error=str(e))

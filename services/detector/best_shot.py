@@ -12,11 +12,13 @@ the object has come and gone, with the single best image.
 
 For fast-moving objects, also publish after a max timeout (8 seconds)
 so alerts aren't delayed forever.
+
+Optimization: stores only a padded crop during accumulation (~100KB vs ~6MB full frame).
+The full frame is captured once at publish time via collect(current_frame=...).
 """
 
-import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import structlog
@@ -27,7 +29,9 @@ log = structlog.get_logger()
 @dataclass
 class Candidate:
     """Best frame candidate for a tracked object."""
-    frame: np.ndarray
+    crop: np.ndarray          # Padded crop around bbox (small, ~100KB)
+    crop_offset: tuple        # (cx1, cy1) — offset of crop within original frame
+    frame: np.ndarray | None  # Full frame — only set at publish time
     bbox: tuple
     bbox_area: float
     confidence: float
@@ -77,16 +81,14 @@ class BestShotSelector:
         self._buffers: dict[str, TrackBuffer] = {}
 
         # Already-published: camera:tracker_id → True
-        # Prevents ANY re-publish for the same tracker
         self._published: set[str] = set()
 
         # Spatial memory: camera → list of (bbox_center, timestamp)
-        # If a "new" object appears at a recently-published location, suppress it
         self._spatial_memory: dict[str, list[tuple[tuple[float, float], float]]] = {}
-        self.SPATIAL_RADIUS_PCT = 5.0  # 5% of frame = same location
-        self.SPATIAL_MEMORY_TTL = 300  # Remember positions for 5 minutes
+        self.SPATIAL_RADIUS_PCT = 5.0
+        self.SPATIAL_MEMORY_TTL = 300
 
-        self._frame_counter: dict[str, int] = {}  # camera → global frame counter
+        self._frame_counter: dict[str, int] = {}
         self._last_cleanup = time.monotonic()
 
     def _key(self, camera_id: str, tracker_id: int) -> str:
@@ -95,11 +97,27 @@ class BestShotSelector:
     def _bbox_center(self, bbox: tuple) -> tuple[float, float]:
         return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
 
+    @staticmethod
+    def _padded_crop(frame: np.ndarray, bbox: tuple, pad_pct: float = 0.2) -> tuple[np.ndarray, tuple]:
+        """Crop region around bbox with padding. Returns (crop, (cx1, cy1)).
+
+        A 200x400 person bbox with 20% padding → ~280x560 crop (~470KB vs ~6MB full 1080p).
+        """
+        x1, y1, x2, y2 = [int(c) for c in bbox]
+        h, w = frame.shape[:2]
+        bw, bh = x2 - x1, y2 - y1
+        pad_x = int(bw * pad_pct)
+        pad_y = int(bh * pad_pct)
+        cx1 = max(0, x1 - pad_x)
+        cy1 = max(0, y1 - pad_y)
+        cx2 = min(w, x2 + pad_x)
+        cy2 = min(h, y2 + pad_y)
+        return frame[cy1:cy2, cx1:cx2].copy(), (cx1, cy1)
+
     def _is_near_published(self, camera_id: str, center: tuple[float, float], frame_shape: tuple) -> bool:
         """Check if this position was recently published (spatial dedup)."""
         now = time.monotonic()
         memory = self._spatial_memory.get(camera_id, [])
-        # Clean expired
         memory = [(c, t) for c, t in memory if now - t < self.SPATIAL_MEMORY_TTL]
         self._spatial_memory[camera_id] = memory
 
@@ -121,9 +139,8 @@ class BestShotSelector:
 
     def _compute_score(self, confidence: float, bbox_area: float, metadata: dict) -> float:
         """Score a frame. Higher = better candidate for the ONE alert."""
-        score = bbox_area * 0.001  # Bigger object = better image
-        score += confidence * 100  # Higher YOLO confidence
-        # Face bonuses (for persons)
+        score = bbox_area * 0.001
+        score += confidence * 100
         if metadata.get("person_name"):
             score += 500
         if metadata.get("face_detected"):
@@ -133,7 +150,6 @@ class BestShotSelector:
             score += fc * 300
         except (ValueError, TypeError):
             pass
-        # Plate bonus (for vehicles)
         if metadata.get("license_plate"):
             score += 400
         return score
@@ -154,20 +170,15 @@ class BestShotSelector:
         now = time.monotonic()
         metadata = metadata or {}
 
-        # Already published this exact tracker — ignore completely
         if key in self._published:
             return
 
-        # Check spatial dedup: is this a "new" tracker at a recently-published spot?
         center = self._bbox_center(bbox)
         if key not in self._buffers:
-            # New tracker — check if it's at a known position
             if self._is_near_published(camera_id, center, frame.shape):
-                # Same spot as a recent event — suppress this tracker entirely
                 self._published.add(key)
                 return
 
-        # Size filters
         x1, y1, x2, y2 = bbox
         bbox_w = x2 - x1
         bbox_h = y2 - y1
@@ -179,7 +190,6 @@ class BestShotSelector:
         if base_label == "person" and bbox_h < self.min_person_height:
             return
 
-        # Create or update buffer
         if key not in self._buffers:
             self._buffers[key] = TrackBuffer(
                 tracker_id=tracker_id,
@@ -192,15 +202,17 @@ class BestShotSelector:
         buf = self._buffers[key]
         buf.last_seen = now
         buf.frame_count += 1
-        buf.label = label  # May change (person → person:Juan)
+        buf.label = label
 
-        # Score this frame
         score = self._compute_score(confidence, bbox_area, metadata)
 
-        # Keep only the best candidate (memory efficient)
+        # Store only a padded crop during accumulation — not the full 6MB frame
         if buf.best is None or score > buf.best.score:
+            crop, offset = self._padded_crop(frame, bbox)
             buf.best = Candidate(
-                frame=frame.copy(),
+                crop=crop,
+                crop_offset=offset,
+                frame=None,  # Full frame set at publish time
                 bbox=bbox,
                 bbox_area=bbox_area,
                 confidence=confidence,
@@ -209,11 +221,16 @@ class BestShotSelector:
                 timestamp=now,
             )
 
-    def collect(self, camera_id: str, current_tracker_ids: set[int]) -> list[tuple[TrackBuffer, Candidate]]:
+    def collect(
+        self,
+        camera_id: str,
+        current_tracker_ids: set[int],
+        current_frame: np.ndarray | None = None,
+    ) -> list[tuple[TrackBuffer, Candidate]]:
         """Collect ready-to-publish events.
 
         Call this after processing all detections in a frame.
-        Returns list of (buffer, best_candidate) for objects that should be published.
+        Pass current_frame so we can attach the full frame for snapshot generation.
 
         An object is ready when:
         1. Its tracker_id is no longer in current_tracker_ids (object left), OR
@@ -230,15 +247,19 @@ class BestShotSelector:
 
             has_left = buf.tracker_id not in current_tracker_ids
             timed_out = (now - buf.first_seen) >= self.max_hold_time
-            # For high-confidence matches, publish sooner
             high_conf = buf.best and buf.best.score > 800
 
             if (has_left or timed_out or high_conf) and buf.best is not None:
-                # Confidence filter
                 if buf.best.confidence >= self.confidence_threshold:
+                    # Attach full frame for snapshot: use current_frame (or the crop as fallback)
+                    if current_frame is not None:
+                        buf.best.frame = current_frame.copy()
+                    else:
+                        # Fallback: use crop (snapshot will be cropped only)
+                        buf.best.frame = buf.best.crop
+
                     ready.append((buf, buf.best))
 
-                    # Remember position and mark as published
                     center = self._bbox_center(buf.best.bbox)
                     self._remember_position(camera_id, center)
                     self._published.add(key)
@@ -268,16 +289,13 @@ class BestShotSelector:
             return
         self._last_cleanup = now
 
-        # Remove stale buffers (not seen for 30+ seconds)
         stale = [k for k, b in self._buffers.items() if now - b.last_seen > 30]
         for k in stale:
             del self._buffers[k]
 
-        # Limit published set size
         if len(self._published) > 5000:
             self._published.clear()
 
-        # Clean spatial memory
         for cam_id in list(self._spatial_memory.keys()):
             self._spatial_memory[cam_id] = [
                 (c, t) for c, t in self._spatial_memory[cam_id]

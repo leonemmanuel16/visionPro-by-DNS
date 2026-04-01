@@ -56,20 +56,21 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [gpu, video]
     environment:
       - REDIS_URL=redis://localhost:6379
       - POSTGRES_URL=postgresql://vision:${DB_PASSWORD}@localhost:5432/visionai
       - MINIO_ENDPOINT=localhost:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
       - MINIO_SECRET_KEY=${MINIO_PASSWORD}
-      - MODEL_NAME=${MODEL_NAME:-yolo11m}
+      - MODEL_NAME=${MODEL_NAME:-yolo26s}
       - DETECTION_FPS=${DETECTION_FPS:-10}
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.40}
       - GO2RTC_URL=http://localhost:1984
       - DEVICE=${DEVICE:-auto}
+      - RING_BUFFER_SECONDS=${RING_BUFFER_SECONDS:-15}
       - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
     depends_on:
       - go2rtc
       - redis
