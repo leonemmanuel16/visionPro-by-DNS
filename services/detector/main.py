@@ -316,6 +316,13 @@ class DetectorService:
                 # Filter by per-camera detect_classes
                 if detect_classes:
                     allowed = set(detect_classes)
+                    # Feature flags like face_recognition/face_unknown imply "person" detection
+                    FACE_FLAGS = {"face_recognition", "face_unknown"}
+                    if allowed & FACE_FLAGS:
+                        allowed.add("person")
+                    # "abandoned_object" needs person/vehicle detection to work
+                    if "abandoned_object" in allowed:
+                        allowed.update({"person", "vehicle"})
                     detections = [
                         d for d in detections
                         if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
