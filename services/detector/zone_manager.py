@@ -39,14 +39,31 @@ class ZoneManager:
             del self._zone_cache[camera_id]
         return await self.get_zones(camera_id)
 
+    # YOLO label → UI detection class mapping (same as main.py)
+    YOLO_TO_CLASS = {
+        "person": "person",
+        "car": "vehicle", "truck": "vehicle", "bus": "vehicle",
+        "motorcycle": "vehicle", "bicycle": "vehicle",
+        "cat": "animal", "dog": "animal", "horse": "animal",
+        "bird": "animal", "sheep": "animal", "cow": "animal",
+        "bear": "animal", "elephant": "animal", "zebra": "animal", "giraffe": "animal",
+    }
+
     def filter_detections(
         self,
         detections: list[TrackedDetection],
         zones: list[dict],
+        frame_shape: tuple | None = None,
     ) -> list[TrackedDetection]:
         """Filter detections based on zone configuration.
 
         If no zones defined, all detections pass through.
+        Zone points are normalized (0-1), so we normalize detection coords too.
+
+        Args:
+            detections: list of tracked detections (pixel coords)
+            zones: list of zone dicts from DB
+            frame_shape: (height, width, ...) for normalizing pixel→0-1 coords
         """
         if not zones:
             return detections
@@ -58,44 +75,70 @@ class ZoneManager:
                     continue
 
                 # Check if detection class is in zone's detect_classes
+                # Zone detect_classes uses mapped names: "person", "vehicle", "animal"
+                # det.label has YOLO names: "car", "truck", etc.
                 detect_classes = zone.get("detect_classes", ["person", "vehicle"])
-                if detect_classes and det.label not in detect_classes:
-                    continue
+                if detect_classes:
+                    base_label = det.label.split(":")[0]
+                    mapped_label = self.YOLO_TO_CLASS.get(base_label, base_label)
+                    if base_label not in detect_classes and mapped_label not in detect_classes:
+                        continue
 
                 zone_type = zone.get("zone_type", "roi")
 
                 if zone_type == "roi":
-                    if self._point_in_polygon(det, zone):
-                        det.metadata = {"zone_id": str(zone["id"]), "zone_name": zone["name"]}
+                    if self._point_in_polygon(det, zone, frame_shape):
+                        if det.metadata is None:
+                            det.metadata = {}
+                        det.metadata["zone_id"] = str(zone["id"])
+                        det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
                         break
                 elif zone_type == "tripwire":
-                    # Simplified: check if center point is near the line
-                    if self._near_tripwire(det, zone):
-                        det.metadata = {"zone_id": str(zone["id"]), "zone_name": zone["name"]}
+                    if self._near_tripwire(det, zone, frame_shape):
+                        if det.metadata is None:
+                            det.metadata = {}
+                        det.metadata["zone_id"] = str(zone["id"])
+                        det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
                         break
                 elif zone_type == "perimeter":
-                    if self._point_in_polygon(det, zone):
-                        det.metadata = {"zone_id": str(zone["id"]), "zone_name": zone["name"]}
+                    if self._point_in_polygon(det, zone, frame_shape):
+                        if det.metadata is None:
+                            det.metadata = {}
+                        det.metadata["zone_id"] = str(zone["id"])
+                        det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
                         break
 
         return filtered
 
     @staticmethod
-    def _get_center(det: TrackedDetection) -> tuple[float, float]:
-        """Get center point of detection bounding box (normalized 0-1)."""
-        x1, y1, x2, y2 = det.bbox
-        return ((x1 + x2) / 2, (y1 + y2) / 2)
+    def _get_center(det: TrackedDetection, frame_shape: tuple | None = None) -> tuple[float, float]:
+        """Get center point of detection bounding box, normalized to 0-1.
 
-    def _point_in_polygon(self, det: TrackedDetection, zone: dict) -> bool:
+        Zone points from the dashboard are in normalized coords (0-1),
+        so we must normalize pixel coords to match.
+        """
+        x1, y1, x2, y2 = det.bbox
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+
+        if frame_shape is not None:
+            h, w = frame_shape[:2]
+            if w > 0 and h > 0:
+                cx /= w
+                cy /= h
+
+        return (cx, cy)
+
+    def _point_in_polygon(self, det: TrackedDetection, zone: dict, frame_shape: tuple | None = None) -> bool:
         """Check if detection center is inside a polygon zone."""
         points = zone.get("points", [])
         if len(points) < 3:
             return False
 
-        cx, cy = self._get_center(det)
+        cx, cy = self._get_center(det, frame_shape)
 
         # Ray casting algorithm
         polygon = [(p.get("x", 0), p.get("y", 0)) for p in points]
@@ -113,13 +156,13 @@ class ZoneManager:
 
         return inside
 
-    def _near_tripwire(self, det: TrackedDetection, zone: dict) -> bool:
+    def _near_tripwire(self, det: TrackedDetection, zone: dict, frame_shape: tuple | None = None) -> bool:
         """Check if detection is near a tripwire line."""
         points = zone.get("points", [])
         if len(points) < 2:
             return False
 
-        cx, cy = self._get_center(det)
+        cx, cy = self._get_center(det, frame_shape)
         x1, y1 = points[0].get("x", 0), points[0].get("y", 0)
         x2, y2 = points[1].get("x", 0), points[1].get("y", 0)
 

@@ -314,6 +314,7 @@ class DetectorService:
                     continue
 
                 # Filter by per-camera detect_classes
+                pre_filter_count = len(detections)
                 if detect_classes:
                     allowed = set(detect_classes)
                     # Feature flags like face_recognition/face_unknown imply "person" detection
@@ -328,6 +329,9 @@ class DetectorService:
                         if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
                     ]
                     if not detections:
+                        if frame_count % 50 == 0:
+                            log.info("pipeline.class_filter_drop", camera=camera_name,
+                                     pre=pre_filter_count, allowed=list(allowed))
                         await asyncio.sleep(frame_interval)
                         continue
 
@@ -335,10 +339,23 @@ class DetectorService:
                 tracked = tracker.update(detections, frame)
 
                 # Filter by zones
-                filtered = zone_manager.filter_detections(tracked, zones)
+                filtered = zone_manager.filter_detections(tracked, zones, frame_shape=frame.shape)
 
                 # Attribute extraction + face recognition
                 frame_count += 1
+
+                # ── DIAGNOSTIC: Log pipeline stages every ~10 seconds ──
+                if frame_count % (self.detection_fps * 10) == 1:
+                    active_bufs = len([k for k in best_shot._buffers if k.startswith(camera_id)])
+                    published_count = len([k for k in best_shot._published if k.startswith(camera_id)])
+                    log.info("pipeline.diag", camera=camera_name,
+                             raw_dets=pre_filter_count,
+                             after_class_filter=len(detections),
+                             tracked=len(tracked),
+                             after_zone_filter=len(filtered),
+                             zones_configured=len(zones),
+                             best_shot_buffers=active_bufs,
+                             best_shot_published=published_count)
                 run_face = (frame_count % face_every_n == 0) and face_recognizer.available
                 for det in filtered:
                     base_label = det.label.split(":")[0]
