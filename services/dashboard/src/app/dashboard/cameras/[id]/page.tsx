@@ -30,10 +30,9 @@ import {
   Clock,
   Save,
   ArrowLeft,
-  SquareDashedMousePointer,
-  Undo2,
-  Eraser,
-  Check,
+  Crosshair,
+  Undo,
+  XCircle,
 } from "lucide-react";
 
 interface CameraDetail {
@@ -623,7 +622,7 @@ export default function CameraDetailPage() {
                     />
                     <div>
                       <p className="text-sm font-medium text-gray-900">
-                        <SquareDashedMousePointer className="h-3.5 w-3.5 inline mr-1" />
+                        <Crosshair className="h-3.5 w-3.5 inline mr-1" />
                         Habilitar zona personalizada
                       </p>
                       <p className="text-[10px] text-gray-500">
@@ -662,7 +661,7 @@ export default function CameraDetailPage() {
                           }));
                         }}
                       >
-                        <Eraser className="h-3.5 w-3.5 mr-1" /> Limpiar
+                        <XCircle className="h-3.5 w-3.5 mr-1" /> Limpiar
                       </Button>
                       <Button
                         variant="outline"
@@ -678,7 +677,7 @@ export default function CameraDetailPage() {
                           }));
                         }}
                       >
-                        <Undo2 className="h-3.5 w-3.5 mr-1" /> Deshacer
+                        <Undo className="h-3.5 w-3.5 mr-1" /> Deshacer
                       </Button>
                       <span className="flex-1" />
                       <span className="text-[10px] text-gray-400">
@@ -941,7 +940,7 @@ export default function CameraDetailPage() {
                         className="absolute top-2 right-14 p-1 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50 transition-colors"
                         title="Configurar zona"
                       >
-                        <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                        <Crosshair className="h-3.5 w-3.5" />
                       </button>
                     )}
                   </div>

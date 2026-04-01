@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cpu, HardDrive, Thermometer, MemoryStick } from "lucide-react";
+import { Cpu, HardDrive, Thermometer, Database } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface HealthMetrics {
@@ -75,7 +75,7 @@ export function SystemHealthWidget() {
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div className="flex items-center gap-2 p-2 rounded bg-gray-50">
-          <MemoryStick className="h-3.5 w-3.5 text-purple-500" />
+          <Database className="h-3.5 w-3.5 text-purple-500" />
           <span className="text-gray-600">RAM: {metrics.ram_used_gb?.toFixed(1)}/{metrics.ram_total_gb?.toFixed(0)} GB</span>
         </div>
         <div className="flex items-center gap-2 p-2 rounded bg-gray-50">

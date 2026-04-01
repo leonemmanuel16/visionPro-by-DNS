@@ -134,7 +134,7 @@ class DetectorService:
         """Start detection tasks for enabled cameras, stop tasks for disabled ones."""
         async with self.db_pool.acquire() as conn:
             cameras = await conn.fetch(
-                "SELECT id, name, rtsp_sub_stream, rtsp_main_stream, camera_type FROM cameras WHERE is_enabled = true AND is_online = true"
+                "SELECT id, name, rtsp_sub_stream, rtsp_main_stream, camera_type, config FROM cameras WHERE is_enabled = true AND is_online = true"
             )
 
         # Build set of camera IDs that SHOULD be running
@@ -169,17 +169,39 @@ class DetectorService:
                     else:
                         stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
                 if stream_url:
+                    # Load per-camera detect_classes from config
+                    cam_config = cam.get("config") or {}
+                    if isinstance(cam_config, str):
+                        try:
+                            cam_config = json.loads(cam_config)
+                        except Exception:
+                            cam_config = {}
+                    detect_classes = cam_config.get("detect_classes", None)  # None = detect all
+
                     task = asyncio.create_task(
                         self._detection_loop(
-                            cam_id, cam["name"], stream_url, detector, publisher, zone_manager, face_recognizer
+                            cam_id, cam["name"], stream_url, detector, publisher,
+                            zone_manager, face_recognizer, detect_classes=detect_classes
                         )
                     )
                     self.camera_tasks[cam_id] = task
                     stream_type = "sub" if is_fisheye else "main"
-                    log.info("detector.camera_started", camera_id=cam_id, name=cam["name"], stream=stream_type)
+                    log.info("detector.camera_started", camera_id=cam_id, name=cam["name"],
+                             stream=stream_type, detect_classes=detect_classes)
+
+    # YOLO label → UI detection class mapping
+    YOLO_TO_CLASS = {
+        "person": "person",
+        "car": "vehicle", "truck": "vehicle", "bus": "vehicle",
+        "motorcycle": "vehicle", "bicycle": "vehicle",
+        "cat": "animal", "dog": "animal", "horse": "animal",
+        "bird": "animal", "sheep": "animal", "cow": "animal",
+        "bear": "animal", "elephant": "animal", "zebra": "animal", "giraffe": "animal",
+    }
 
     async def _detection_loop(
-        self, camera_id, camera_name, stream_url, detector, publisher, zone_manager, face_recognizer
+        self, camera_id, camera_name, stream_url, detector, publisher,
+        zone_manager, face_recognizer, detect_classes=None
     ):
         """Main detection loop for a single camera."""
         grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url)
@@ -235,6 +257,17 @@ class DetectorService:
                 if not detections:
                     await asyncio.sleep(frame_interval)
                     continue
+
+                # Filter by per-camera detect_classes
+                if detect_classes:
+                    allowed = set(detect_classes)
+                    detections = [
+                        d for d in detections
+                        if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
+                    ]
+                    if not detections:
+                        await asyncio.sleep(frame_interval)
+                        continue
 
                 # Track objects
                 tracked = tracker.update(detections, frame)

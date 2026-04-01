@@ -210,6 +210,34 @@ async def update_camera_route(
     return camera
 
 
+@router.put("/{camera_id}/settings")
+async def update_camera_settings(
+    camera_id: UUID,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Save per-camera detection settings (detect_classes, image config) into camera.config JSONB."""
+    camera = await get_camera(db, camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Merge new settings into existing config
+    current_config = camera.config or {}
+    if "detections" in data:
+        current_config["detect_classes"] = data["detections"]
+    if "image" in data:
+        current_config["image_settings"] = data["image"]
+
+    await update_camera(db, camera_id, {"config": current_config})
+
+    return {
+        "camera_id": str(camera_id),
+        "config": current_config,
+        "message": "Configuracion guardada",
+    }
+
+
 @router.delete("/{camera_id}", status_code=204)
 async def delete_camera_route(
     camera_id: UUID,
