@@ -473,6 +473,8 @@ def _check_alerts(metrics: HealthMetrics, thresholds: dict) -> list[dict]:
 
 # Store alert history in memory (last 100 alerts)
 _alert_history: list[dict] = []
+# Active alerts by key (auto-resolve when metric drops below threshold)
+_active_alerts: dict[str, dict] = {}
 MAX_ALERT_HISTORY = 100
 
 
@@ -527,9 +529,30 @@ async def get_health_metrics():
     alerts = _check_alerts(metrics, thresholds)
     metrics.alerts = alerts
 
-    # Store alerts in history
+    # Track active alerts and auto-resolve
+    now_iso = datetime.now(timezone.utc).isoformat()
+    current_alert_keys = {a["key"] for a in alerts}
+
+    # New alerts → add to active and history
     for alert in alerts:
-        _alert_history.append(alert)
+        if alert["key"] not in _active_alerts:
+            alert["status"] = "active"
+            _active_alerts[alert["key"]] = alert
+            _alert_history.append(alert)
+            if len(_alert_history) > MAX_ALERT_HISTORY:
+                _alert_history.pop(0)
+        else:
+            # Update value on existing active alert
+            _active_alerts[alert["key"]]["value"] = alert["value"]
+            _active_alerts[alert["key"]]["timestamp"] = alert["timestamp"]
+
+    # Auto-resolve: alert was active but metric is now below threshold
+    resolved_keys = [k for k in _active_alerts if k not in current_alert_keys]
+    for key in resolved_keys:
+        resolved = _active_alerts.pop(key)
+        resolved["status"] = "resolved"
+        resolved["resolved_at"] = now_iso
+        _alert_history.append(resolved)
         if len(_alert_history) > MAX_ALERT_HISTORY:
             _alert_history.pop(0)
 
@@ -538,8 +561,16 @@ async def get_health_metrics():
 
 @router.get("/health-alerts")
 async def get_health_alerts():
-    """Get recent health alert history."""
-    return {"alerts": list(reversed(_alert_history)), "count": len(_alert_history)}
+    """Get health alert history. Active alerts first, then resolved."""
+    active = [a for a in _active_alerts.values()]
+    resolved = [a for a in _alert_history if a.get("status") == "resolved"]
+    # Return active first, then last 20 resolved
+    all_alerts = active + list(reversed(resolved))[:20]
+    return {
+        "alerts": all_alerts,
+        "active_count": len(active),
+        "total_count": len(_alert_history),
+    }
 
 
 @router.post("/health-alerts/clear")
@@ -547,6 +578,7 @@ async def clear_health_alerts():
     """Clear all health alerts."""
     _alert_history.clear()
     _alert_cooldowns.clear()
+    _active_alerts.clear()
     return {"status": "cleared"}
 
 
