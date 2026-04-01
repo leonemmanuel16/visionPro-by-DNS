@@ -2,6 +2,11 @@
 
 Pulls frames from go2rtc streams, runs YOLO detection,
 tracks objects, and publishes detection events.
+
+Architecture:
+- Each camera has its own async detection loop (grab → detect → track → publish)
+- All cameras share a single BatchDetector for GPU inference (batched YOLO)
+- Frame grabbing uses GpuFrameGrabber (NVDEC) with CPU fallback
 """
 
 import asyncio
@@ -17,7 +22,9 @@ import redis.asyncio as aioredis
 import structlog
 
 from detector import YOLODetector
+from batch_detector import BatchDetector
 from frame_grabber import FrameGrabber
+from gpu_frame_grabber import GpuFrameGrabber
 from tracker import ObjectTracker
 from zone_manager import ZoneManager
 from event_publisher import EventPublisher
@@ -58,15 +65,19 @@ class DetectorService:
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
         self.device = os.environ.get("DEVICE", "auto")
         self.ring_buffer_seconds = int(os.environ.get("RING_BUFFER_SECONDS", "15"))
+        self.max_batch_size = int(os.environ.get("MAX_BATCH_SIZE", "8"))
+        self.use_gpu_decode = os.environ.get("USE_GPU_DECODE", "true").lower() == "true"
 
         self.db_pool: asyncpg.Pool | None = None
         self.redis: aioredis.Redis | None = None
         self.running = True
         self.camera_tasks: dict[str, asyncio.Task] = {}
         self.thread_pool = ThreadPoolExecutor(max_workers=8)
+        self.batch_detector: BatchDetector | None = None
 
     async def start(self):
-        log.info("detector.starting", model=self.model_name, fps=self.detection_fps)
+        log.info("detector.starting", model=self.model_name, fps=self.detection_fps,
+                 max_batch=self.max_batch_size, gpu_decode=self.use_gpu_decode)
 
         # Connect to databases
         self.db_pool = await asyncpg.create_pool(
@@ -80,12 +91,20 @@ class DetectorService:
         await self.redis.ping()
         log.info("detector.connected", postgres=True, redis=True)
 
-        # Initialize detector
+        # Initialize YOLO detector
         detector = YOLODetector(
             model_name=self.model_name,
             confidence=self.confidence_threshold,
             device=self.device,
         )
+
+        # Initialize batch detector (centralizes GPU inference across all cameras)
+        self.batch_detector = BatchDetector(
+            detector,
+            max_batch_size=self.max_batch_size,
+            batch_timeout=0.05,
+        )
+        await self.batch_detector.start()
 
         # Initialize event publisher
         publisher = EventPublisher(
@@ -110,16 +129,16 @@ class DetectorService:
         face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
 
         # Start detection for existing cameras
-        await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
+        await self._start_camera_detections(publisher, zone_manager, face_recognizer)
 
         # Listen for camera events (new cameras, removed cameras)
         listener_task = asyncio.create_task(
-            self._listen_camera_events(detector, publisher, zone_manager, face_recognizer)
+            self._listen_camera_events(publisher, zone_manager, face_recognizer)
         )
 
         # Periodically refresh camera list
         refresh_task = asyncio.create_task(
-            self._refresh_loop(detector, publisher, zone_manager, face_recognizer)
+            self._refresh_loop(publisher, zone_manager, face_recognizer)
         )
 
         # Periodic database cleanup (events, expired faces)
@@ -132,7 +151,7 @@ class DetectorService:
         except asyncio.CancelledError:
             log.info("detector.shutting_down")
 
-    async def _start_camera_detections(self, detector, publisher, zone_manager, face_recognizer):
+    async def _start_camera_detections(self, publisher, zone_manager, face_recognizer):
         """Start detection tasks for enabled cameras, stop tasks for disabled ones."""
         async with self.db_pool.acquire() as conn:
             cameras = await conn.fetch(
@@ -180,7 +199,7 @@ class DetectorService:
 
                     task = asyncio.create_task(
                         self._detection_loop(
-                            cam_id, cam["name"], stream_url, detector, publisher,
+                            cam_id, cam["name"], stream_url, publisher,
                             zone_manager, face_recognizer, detect_classes=detect_classes
                         )
                     )
@@ -199,13 +218,44 @@ class DetectorService:
         "bear": "animal", "elephant": "animal", "zebra": "animal", "giraffe": "animal",
     }
 
+    def _create_grabber(self, stream_url: str, camera_name: str):
+        """Create frame grabber: GPU (NVDEC) with CPU fallback."""
+        if self.use_gpu_decode and self.device != "cpu":
+            try:
+                grabber = GpuFrameGrabber(stream_url, self.detection_fps)
+                # Test connection
+                test_frame = grabber.grab_frame()
+                if test_frame is not None:
+                    log.info("detector.using_gpu_grabber", camera=camera_name)
+                    return grabber
+                else:
+                    raise RuntimeError("GPU grabber test frame was None")
+            except Exception as e:
+                log.warning("detector.gpu_grabber_failed", camera=camera_name,
+                            error=str(e), msg="Falling back to CPU frame grabber")
+                # Clean up failed grabber
+                try:
+                    grabber.release()
+                except Exception:
+                    pass
+
+        # CPU fallback
+        log.info("detector.using_cpu_grabber", camera=camera_name)
+        return FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url,
+                            use_cuda=False)
+
     async def _detection_loop(
-        self, camera_id, camera_name, stream_url, detector, publisher,
+        self, camera_id, camera_name, stream_url, publisher,
         zone_manager, face_recognizer, detect_classes=None
     ):
         """Main detection loop for a single camera."""
-        grabber = FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url,
-                               use_cuda=(self.device != "cpu"))
+        loop = asyncio.get_event_loop()
+
+        # Create frame grabber (GPU NVDEC with CPU fallback)
+        grabber = await loop.run_in_executor(
+            self.thread_pool, self._create_grabber, stream_url, camera_name
+        )
+
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
             min_bbox_area=12000,
@@ -223,7 +273,6 @@ class DetectorService:
         zones = await zone_manager.get_zones(camera_id)
 
         frame_interval = 1.0 / self.detection_fps
-        loop = asyncio.get_event_loop()
         frame_count = 0
         face_every_n = 3
         enable_check_interval = self.detection_fps * 10
@@ -257,10 +306,8 @@ class DetectorService:
                 # Push frame to ring buffer (for video clips)
                 ring_buffer.push(frame)
 
-                # Run detection in thread pool (CPU/GPU bound)
-                detections = await loop.run_in_executor(
-                    self.thread_pool, detector.detect, frame
-                )
+                # Submit frame to batch detector (waits for batched inference)
+                detections = await self.batch_detector.submit(frame)
 
                 if not detections:
                     await asyncio.sleep(frame_interval)
@@ -461,7 +508,7 @@ class DetectorService:
                                 ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                                 clip_path = await save_clip_to_minio(
                                     publisher.minio, clip_bytes,
-                                    str(uuid.uuid4()) if 'uuid' in dir() else _uuid.uuid4().hex,
+                                    _uuid.uuid4().hex,
                                     ts_str,
                                 )
                     except Exception as e:
@@ -490,7 +537,7 @@ class DetectorService:
             del self.camera_tasks[camera_id]
         log.info("detector.camera_loop_ended", camera_id=camera_id, name=camera_name)
 
-    async def _listen_camera_events(self, detector, publisher, zone_manager, face_recognizer):
+    async def _listen_camera_events(self, publisher, zone_manager, face_recognizer):
         """Listen for camera add/remove events on Redis Stream."""
         last_id = "$"
         while self.running:
@@ -503,7 +550,7 @@ class DetectorService:
                         last_id = entry_id
                         event_type = data.get("type")
                         if event_type in ("camera_discovered", "camera_online"):
-                            await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
+                            await self._start_camera_detections(publisher, zone_manager, face_recognizer)
                         elif event_type == "camera_offline":
                             cam_id = data.get("camera_id")
                             if cam_id in self.camera_tasks:
@@ -551,12 +598,12 @@ class DetectorService:
             except Exception as e:
                 log.warning("detector.cleanup_error", error=str(e))
 
-    async def _refresh_loop(self, detector, publisher, zone_manager, face_recognizer):
+    async def _refresh_loop(self, publisher, zone_manager, face_recognizer):
         """Periodically refresh camera list — starts new, stops disabled."""
         while self.running:
             await asyncio.sleep(30)
             try:
-                await self._start_camera_detections(detector, publisher, zone_manager, face_recognizer)
+                await self._start_camera_detections(publisher, zone_manager, face_recognizer)
                 active = len(self.camera_tasks)
                 log.debug("detector.refresh", active_cameras=active)
             except Exception as e:
@@ -564,6 +611,9 @@ class DetectorService:
 
     async def stop(self):
         self.running = False
+        # Stop batch detector first (unblocks waiting camera loops)
+        if self.batch_detector:
+            await self.batch_detector.stop()
         for task in self.camera_tasks.values():
             task.cancel()
         if self.db_pool:

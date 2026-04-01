@@ -179,8 +179,32 @@ class YOLODetector:
                         msg="Falling back to PyTorch FP16")
         return None
 
+    def _parse_results(self, results) -> list[list[Detection]]:
+        """Parse YOLO results into lists of Detection objects."""
+        batch_detections = []
+        for result in results:
+            detections = []
+            if result.boxes is not None:
+                boxes = result.boxes
+                for i in range(len(boxes)):
+                    cls_id = int(boxes.cls[i])
+                    if cls_id not in self.TARGET_CLASSES:
+                        continue
+                    bbox = boxes.xyxy[i].cpu().numpy()
+                    conf = float(boxes.conf[i])
+                    detections.append(
+                        Detection(
+                            bbox=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
+                            label=self.TARGET_CLASSES[cls_id],
+                            confidence=conf,
+                            class_id=cls_id,
+                        )
+                    )
+            batch_detections.append(detections)
+        return batch_detections
+
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        """Run YOLO inference on a frame. Returns list of detections."""
+        """Run YOLO inference on a single frame. Returns list of detections."""
         start = time.monotonic()
 
         results = self.model.predict(
@@ -191,25 +215,7 @@ class YOLODetector:
             classes=list(self.TARGET_CLASSES.keys()),
         )
 
-        detections = []
-        if results and results[0].boxes is not None:
-            boxes = results[0].boxes
-            for i in range(len(boxes)):
-                cls_id = int(boxes.cls[i])
-                if cls_id not in self.TARGET_CLASSES:
-                    continue
-
-                bbox = boxes.xyxy[i].cpu().numpy()
-                conf = float(boxes.conf[i])
-
-                detections.append(
-                    Detection(
-                        bbox=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
-                        label=self.TARGET_CLASSES[cls_id],
-                        confidence=conf,
-                        class_id=cls_id,
-                    )
-                )
+        detections = self._parse_results(results)[0] if results else []
 
         elapsed = (time.monotonic() - start) * 1000
         if detections:
@@ -218,3 +224,33 @@ class YOLODetector:
             log.debug("detector.no_detections", ms=f"{elapsed:.1f}")
 
         return detections
+
+    def detect_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        """Run YOLO inference on a batch of frames. Returns list of detection lists.
+
+        Ultralytics YOLO natively accepts a list of images and processes them
+        as a single batched tensor — much more GPU-efficient than individual calls.
+        """
+        if not frames:
+            return []
+
+        start = time.monotonic()
+
+        # Ultralytics YOLO accepts a list of frames natively
+        results = self.model.predict(
+            frames,
+            conf=self.confidence,
+            verbose=False,
+            half=self.use_half,
+            classes=list(self.TARGET_CLASSES.keys()),
+        )
+
+        batch_detections = self._parse_results(results)
+
+        elapsed = (time.monotonic() - start) * 1000
+        total_dets = sum(len(d) for d in batch_detections)
+        log.debug("detector.batch_inference", batch_size=len(frames),
+                  total_detections=total_dets, ms=f"{elapsed:.1f}",
+                  ms_per_frame=f"{elapsed / len(frames):.1f}")
+
+        return batch_detections

@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     gcc g++ cmake make \
     curl \
+    # NVDEC/NVENC — hardware video decode/encode via FFmpeg
+    libnvidia-decode-550 libnvidia-encode-550 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
