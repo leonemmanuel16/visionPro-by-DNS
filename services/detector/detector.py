@@ -228,29 +228,42 @@ class YOLODetector:
     def detect_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
         """Run YOLO inference on a batch of frames. Returns list of detection lists.
 
-        Ultralytics YOLO natively accepts a list of images and processes them
-        as a single batched tensor — much more GPU-efficient than individual calls.
+        If running a TensorRT engine (fixed batch=1), processes frames one-by-one.
+        If running PyTorch, uses native batched inference for better GPU utilization.
         """
         if not frames:
             return []
 
         start = time.monotonic()
 
-        # Ultralytics YOLO accepts a list of frames natively
-        results = self.model.predict(
-            frames,
-            conf=self.confidence,
-            verbose=False,
-            half=self.use_half,
-            classes=list(self.TARGET_CLASSES.keys()),
-        )
-
-        batch_detections = self._parse_results(results)
+        if self._using_engine:
+            # TensorRT engines are compiled with fixed batch=1 — iterate
+            batch_detections = []
+            for frame in frames:
+                results = self.model.predict(
+                    frame,
+                    conf=self.confidence,
+                    verbose=False,
+                    half=self.use_half,
+                    classes=list(self.TARGET_CLASSES.keys()),
+                )
+                batch_detections.extend(self._parse_results(results))
+        else:
+            # PyTorch: native batched inference (much more GPU-efficient)
+            results = self.model.predict(
+                frames,
+                conf=self.confidence,
+                verbose=False,
+                half=self.use_half,
+                classes=list(self.TARGET_CLASSES.keys()),
+            )
+            batch_detections = self._parse_results(results)
 
         elapsed = (time.monotonic() - start) * 1000
         total_dets = sum(len(d) for d in batch_detections)
         log.debug("detector.batch_inference", batch_size=len(frames),
                   total_detections=total_dets, ms=f"{elapsed:.1f}",
-                  ms_per_frame=f"{elapsed / len(frames):.1f}")
+                  ms_per_frame=f"{elapsed / len(frames):.1f}",
+                  engine=self._using_engine)
 
         return batch_detections
