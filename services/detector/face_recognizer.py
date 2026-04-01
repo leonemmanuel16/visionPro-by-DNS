@@ -392,9 +392,10 @@ class FaceRecognizer:
             emb_str = "[" + ",".join(f"{v:.6f}" for v in encoding) + "]"
             async with self.db.acquire() as conn:
                 # Check if this face was already dismissed/deleted by user
+                # <=> is cosine distance (0 = identical, 2 = opposite)
                 dismissed = await conn.fetchval("""
                     SELECT id FROM dismissed_faces
-                    WHERE embedding <-> $1::vector < 0.55
+                    WHERE embedding <=> $1::vector < 0.65
                     LIMIT 1
                 """, emb_str)
                 if dismissed:
@@ -402,9 +403,10 @@ class FaceRecognizer:
                     return
 
                 # Check if already assigned to a known person
+                # <=> is cosine distance (0 = identical, 2 = opposite)
                 known = await conn.fetchval("""
                     SELECT id FROM face_embeddings
-                    WHERE embedding <-> $1::vector < 0.55
+                    WHERE embedding <=> $1::vector < 0.65
                     LIMIT 1
                 """, emb_str)
                 if known:
@@ -412,9 +414,10 @@ class FaceRecognizer:
                     return
 
                 # Check if similar unknown face already exists
+                # <=> is cosine distance — tighter threshold to group unknowns
                 existing = await conn.fetchval("""
                     SELECT id FROM unknown_faces
-                    WHERE embedding <-> $1::vector < 0.55
+                    WHERE embedding <=> $1::vector < 0.60
                     LIMIT 1
                 """, emb_str)
 

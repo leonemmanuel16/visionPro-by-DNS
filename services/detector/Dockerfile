@@ -28,7 +28,7 @@ WORKDIR /app
 
 # Install PyTorch with CUDA 12.4 support first (large download, cached layer)
 RUN pip3 install --no-cache-dir \
-    torch>=2.5.1 torchvision>=0.20.1 \
+    torch==2.5.1 torchvision==0.20.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
 # Install TensorRT (for optimized inference engine)
