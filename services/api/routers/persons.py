@@ -1,4 +1,8 @@
-"""Person and Face Recognition routes."""
+"""Person and Face Recognition routes.
+
+Uses InsightFace (buffalo_l, ArcFace) for 512-dim face embeddings.
+The model is loaded lazily on first use and cached globally.
+"""
 
 import asyncio
 import io
@@ -7,6 +11,7 @@ from datetime import datetime, timezone
 
 import cv2
 import numpy as np
+import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, select, func
@@ -18,7 +23,64 @@ from models.person import Person, UnknownFace
 from models.user import User
 from utils.minio_client import get_minio_client, upload_file, get_object_data
 
+log = structlog.get_logger()
 router = APIRouter(tags=["persons"])
+
+# ---- Lazy InsightFace singleton ----
+_face_app = None
+_face_app_lock = asyncio.Lock()
+
+
+def _load_face_app():
+    """Load InsightFace model (CPU). Called once, cached globally."""
+    from insightface.app import FaceAnalysis
+    app = FaceAnalysis(
+        name="buffalo_l",
+        providers=["CPUExecutionProvider"],
+    )
+    app.prepare(ctx_id=-1, det_size=(640, 640))
+    log.info("persons.insightface_loaded", provider="CPU")
+    return app
+
+
+async def _get_face_app():
+    """Get or lazily initialize the InsightFace model."""
+    global _face_app
+    if _face_app is not None:
+        return _face_app
+    async with _face_app_lock:
+        if _face_app is not None:
+            return _face_app
+        _face_app = await asyncio.to_thread(_load_face_app)
+        return _face_app
+
+
+def _detect_and_embed_insightface(face_app, image: np.ndarray, raw_bytes: bytes):
+    """Detect face + compute 512-dim embedding with InsightFace. Runs in thread pool."""
+    emb = None
+    crop = None
+    try:
+        faces = face_app.get(image)
+        if faces:
+            # Pick the largest face
+            best = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+            emb = best.embedding  # 512-dim numpy array
+
+            # Crop face with padding
+            x1, y1, x2, y2 = [int(v) for v in best.bbox]
+            h, w = image.shape[:2]
+            pad = int((y2 - y1) * 0.3)
+            y1 = max(0, y1 - pad)
+            x1 = max(0, x1 - pad)
+            y2 = min(h, y2 + pad)
+            x2 = min(w, x2 + pad)
+            face_crop = image[y1:y2, x1:x2]
+            _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            crop = buf.tobytes()
+    except Exception as e:
+        log.warning("persons.face_detect_error", error=str(e))
+        crop = raw_bytes
+    return emb, crop
 
 
 # --- Schemas ---
@@ -250,29 +312,19 @@ async def upload_photo(
         "image/jpeg",
     )
 
-    # Compute face encoding in a thread pool to avoid blocking the event loop
-    def _compute_embedding(image: np.ndarray):
-        """CPU-heavy face detection + encoding — runs in thread pool."""
-        try:
-            import face_recognition
-            rgb = np.ascontiguousarray(image[:, :, ::-1])
-            locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="hog")
-            if locations:
-                encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
-                if encodings:
-                    return encodings[0], True
-        except ImportError:
-            pass
-        except Exception:
-            pass
-        return None, False
-
+    # Compute face embedding with InsightFace (512-dim)
     embedding = None
     face_detected = False
     try:
-        embedding, face_detected = await asyncio.to_thread(_compute_embedding, img)
-    except Exception:
-        pass
+        face_app = await _get_face_app()
+        emb, _ = await asyncio.to_thread(
+            _detect_and_embed_insightface, face_app, img, contents
+        )
+        if emb is not None:
+            embedding = emb
+            face_detected = True
+    except Exception as e:
+        log.warning("persons.upload_embed_error", error=str(e))
 
     if embedding is not None:
         # Save embedding to pgvector
@@ -638,42 +690,16 @@ async def associate_event_to_person(
     if img is None:
         raise HTTPException(status_code=400, detail="Could not decode snapshot image")
 
-    # Detect face and compute embedding in thread pool (CPU-heavy)
-    def _detect_and_embed(image: np.ndarray, raw_bytes: bytes):
-        """CPU-heavy face detection — runs in thread pool."""
-        emb = None
-        crop = None
-        try:
-            import face_recognition
-            rgb = np.ascontiguousarray(image[:, :, ::-1])
-            locations = face_recognition.face_locations(rgb, model="hog")
-            if not locations:
-                locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=2, model="hog")
-            if locations:
-                encodings = face_recognition.face_encodings(rgb, known_face_locations=locations)
-                if encodings:
-                    emb = encodings[0]
-                    top, right, bottom, left = locations[0]
-                    pad = int((bottom - top) * 0.3)
-                    h, w = image.shape[:2]
-                    top = max(0, top - pad)
-                    left = max(0, left - pad)
-                    bottom = min(h, bottom + pad)
-                    right = min(w, right + pad)
-                    face_crop = image[top:bottom, left:right]
-                    _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                    crop = buf.tobytes()
-        except ImportError:
-            crop = raw_bytes
-        except Exception:
-            crop = raw_bytes
-        return emb, crop
-
+    # Detect face and compute 512-dim embedding with InsightFace
     embedding = None
     face_crop_bytes = None
     try:
-        embedding, face_crop_bytes = await asyncio.to_thread(_detect_and_embed, img, img_bytes)
-    except Exception:
+        face_app = await _get_face_app()
+        embedding, face_crop_bytes = await asyncio.to_thread(
+            _detect_and_embed_insightface, face_app, img, img_bytes
+        )
+    except Exception as e:
+        log.warning("persons.associate_embed_error", error=str(e))
         face_crop_bytes = img_bytes
 
     # Save face crop to MinIO
