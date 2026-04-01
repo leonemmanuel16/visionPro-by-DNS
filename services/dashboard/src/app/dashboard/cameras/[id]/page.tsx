@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useState, useRef, MouseEvent as ReactMouseEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { SnapshotPlayer } from "@/components/SnapshotPlayer";
@@ -585,16 +585,16 @@ export default function CameraDetailPage() {
 
           {/* Right panel — contextual */}
           <div className="space-y-4">
-            {showZonePanel ? (
+            {showZonePanel && selectedDef ? (
               /* ── ZONE EDITOR PANEL ── */
               <Card className="overflow-hidden">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <div className={`p-1 rounded ${selectedDef!.bg}`}>
-                        <selectedDef!.icon className={`h-4 w-4 ${selectedDef!.color}`} />
+                      <div className={`p-1 rounded ${selectedDef.bg}`}>
+                        {(() => { const Icon = selectedDef.icon; return <Icon className={`h-4 w-4 ${selectedDef.color}`} />; })()}
                       </div>
-                      <span>Zona: {selectedDef!.label}</span>
+                      <span>Zona: {selectedDef.label}</span>
                     </div>
                     <button
                       onClick={() => setSelectedDetection(null)}
@@ -704,7 +704,7 @@ export default function CameraDetailPage() {
                               isSelected ? "bg-blue-50 border border-blue-200" : "hover:bg-gray-50"
                             }`}
                           >
-                            <def.icon className={`h-3.5 w-3.5 ${def.color}`} />
+                            {(() => { const DIcon = def.icon; return <DIcon className={`h-3.5 w-3.5 ${def.color}`} />; })()}
                             <span className="flex-1 text-gray-700">{def.label}</span>
                             {zone?.zoneEnabled && zone.points.length >= 3 ? (
                               <Badge variant="default" className="text-[9px] py-0 px-1.5 bg-blue-600">
@@ -913,7 +913,7 @@ export default function CameraDetailPage() {
                       }`}
                     >
                       <div className={`mt-0.5 ${isEnabled ? cap.color : "text-gray-400"}`}>
-                        <cap.icon className="h-5 w-5" />
+                        {(() => { const CIcon = cap.icon; return <CIcon className="h-5 w-5" />; })()}
                       </div>
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
