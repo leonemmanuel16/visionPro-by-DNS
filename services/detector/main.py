@@ -476,14 +476,6 @@ class DetectorService:
                                                   current_frame=frame)
 
                 for buf, candidate in ready_events:
-                    base_label = buf.label.split(":")[0]
-
-                    # ONLY publish persons with face detected
-                    if base_label != "person":
-                        continue
-                    if not candidate.metadata.get("face_detected"):
-                        continue
-
                     best_det = TD(
                         bbox=candidate.bbox,
                         label=buf.label,
