@@ -294,8 +294,8 @@ class EventPublisher:
             await conn.execute(
                 """INSERT INTO events
                    (id, camera_id, event_type, label, confidence, bbox,
-                    zone_id, snapshot_path, thumbnail_path, metadata, occurred_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                    zone_id, snapshot_path, clip_path, thumbnail_path, metadata, occurred_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
                 uuid.UUID(event_id),
                 uuid.UUID(camera_id),
                 event_type,
@@ -304,6 +304,7 @@ class EventPublisher:
                 f'{{"x1":{detection.bbox[0]:.1f},"y1":{detection.bbox[1]:.1f},"x2":{detection.bbox[2]:.1f},"y2":{detection.bbox[3]:.1f}}}',
                 uuid.UUID(zone_id) if zone_id else None,
                 snapshot_path,
+                clip_path,
                 thumbnail_path,
                 json.dumps(metadata),
                 now,

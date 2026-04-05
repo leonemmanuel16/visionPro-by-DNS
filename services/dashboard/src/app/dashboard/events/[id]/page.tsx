@@ -10,8 +10,10 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { format } from "date-fns";
 import Link from "next/link";
-import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt, Car, ZoomIn } from "lucide-react";
+import { ArrowLeft, User, UserPlus, X, Camera, Clock, Tag, Target, Shirt, Car, ZoomIn, ScanFace, MousePointer2, Video } from "lucide-react";
 import { getApiUrl } from "@/lib/urls";
+import { FaceSelector } from "@/components/FaceSelector";
+import { FaceTagModal } from "@/components/FaceTagModal";
 
 function ImageLightbox({ src, alt }: { src: string; alt: string }) {
   const [open, setOpen] = useState(false);
@@ -77,6 +79,44 @@ export default function EventDetailPage() {
 
   const [identifying, setIdentifying] = useState(false);
 
+  // Multi-face detection state
+  const [showFaceDetection, setShowFaceDetection] = useState(false);
+  const [detectingFaces, setDetectingFaces] = useState(false);
+  const [detectedFaces, setDetectedFaces] = useState<Array<{ bbox: { x1: number; y1: number; x2: number; y2: number }; score: number }>>([]);
+  const [faceImageMeta, setFaceImageMeta] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
+  const [allowManualSelect, setAllowManualSelect] = useState(false);
+  const [selectedEventFaceBbox, setSelectedEventFaceBbox] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [showEventFaceTagModal, setShowEventFaceTagModal] = useState(false);
+
+  const handleDetectFaces = async () => {
+    setDetectingFaces(true);
+    try {
+      const result = await api.get<any>(`/events/${id}/detect-faces`);
+      if (result) {
+        setDetectedFaces(result.faces || []);
+        setFaceImageMeta({
+          width: result.image_width || 640,
+          height: result.image_height || 480,
+        });
+        setShowFaceDetection(true);
+      }
+    } catch (e: any) {
+      alert(e?.message || "Error al detectar rostros");
+    } finally {
+      setDetectingFaces(false);
+    }
+  };
+
+  const handleEventFaceTagSave = async (personId: string, isNew: boolean) => {
+    setShowEventFaceTagModal(false);
+    setSelectedEventFaceBbox(null);
+    // Refresh event data
+    const updatedEvent = await api.get(`/events/${id}`);
+    if (updatedEvent) setEvent(updatedEvent);
+    // Refresh persons list
+    api.get<any[]>("/persons").then((d) => d && setPersons(d)).catch(() => {});
+  };
+
   const handleIdentify = async () => {
     setIdentifyError("");
     setIdentifying(true);
@@ -141,17 +181,99 @@ export default function EventDetailPage() {
           <Card>
             <CardContent className="p-2">
               {event.snapshot_path ? (
-                <ImageLightbox
-                  src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
-                  alt="Event snapshot"
-                />
+                showFaceDetection ? (
+                  <div className="space-y-2">
+                    <FaceSelector
+                      imageUrl={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
+                      faces={detectedFaces}
+                      imageWidth={faceImageMeta.width}
+                      imageHeight={faceImageMeta.height}
+                      onSelectFace={(bbox) => {
+                        setSelectedEventFaceBbox(bbox);
+                        setShowEventFaceTagModal(true);
+                      }}
+                      allowManualSelection={allowManualSelect}
+                    />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant={allowManualSelect ? "default" : "outline"}
+                        onClick={() => setAllowManualSelect(!allowManualSelect)}
+                      >
+                        <MousePointer2 className="h-3.5 w-3.5 mr-1" />
+                        {allowManualSelect ? "Modo Manual Activo" : "Seleccionar Rostro Manualmente"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => { setShowFaceDetection(false); setDetectedFaces([]); setAllowManualSelect(false); }}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" /> Cerrar Detector
+                      </Button>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {detectedFaces.length} rostro{detectedFaces.length !== 1 ? "s" : ""} detectado{detectedFaces.length !== 1 ? "s" : ""}. Haz clic en un rostro para etiquetarlo.
+                      {allowManualSelect && " O dibuja un rectangulo para seleccionar manualmente."}
+                    </p>
+                  </div>
+                ) : (
+                  <ImageLightbox
+                    src={`${getApiUrl()}/api/v1/events/${id}/snapshot`}
+                    alt="Event snapshot"
+                  />
+                )
               ) : (
                 <div className="flex h-64 items-center justify-center rounded-lg bg-gray-100 text-gray-400">
                   Sin snapshot disponible
                 </div>
               )}
             </CardContent>
+            {event.snapshot_path && !showFaceDetection && (
+              <div className="px-2 pb-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleDetectFaces}
+                  disabled={detectingFaces}
+                >
+                  {detectingFaces ? (
+                    <span className="flex items-center gap-1">
+                      <span className="animate-spin h-3.5 w-3.5 border-2 border-blue-500 border-t-transparent rounded-full" />
+                      Detectando rostros...
+                    </span>
+                  ) : (
+                    <>
+                      <ScanFace className="h-3.5 w-3.5 mr-1" />
+                      Detectar Rostros
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
           </Card>
+
+          {/* Video Clip */}
+          {event.clip_path && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Video className="h-4 w-4" />
+                  Video del Evento (10s)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-2">
+                <video
+                  src={`${getApiUrl()}/api/v1/events/${id}/clip`}
+                  controls
+                  autoPlay
+                  loop
+                  muted
+                  className="w-full rounded-lg"
+                />
+              </CardContent>
+            </Card>
+          )}
 
           {/* Details */}
           <div className="space-y-4">
@@ -314,6 +436,16 @@ export default function EventDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Face Tag Modal (for multi-face detection) */}
+      <FaceTagModal
+        isOpen={showEventFaceTagModal}
+        onClose={() => { setShowEventFaceTagModal(false); setSelectedEventFaceBbox(null); }}
+        onSave={handleEventFaceTagSave}
+        faceBbox={selectedEventFaceBbox || undefined}
+        sourceType="event"
+        sourceId={id}
+      />
 
       {/* Identify/Create Person Modal */}
       {showIdentify && (

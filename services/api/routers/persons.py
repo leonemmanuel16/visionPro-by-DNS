@@ -83,7 +83,42 @@ def _detect_and_embed_insightface(face_app, image: np.ndarray, raw_bytes: bytes)
     return emb, crop
 
 
+def _detect_all_faces_insightface(face_app, image: np.ndarray):
+    """Detect ALL faces and compute embeddings. Returns list of face dicts."""
+    results = []
+    try:
+        faces = face_app.get(image)
+        for face in faces:
+            x1, y1, x2, y2 = [int(v) for v in face.bbox]
+            h, w = image.shape[:2]
+            pad = int((y2 - y1) * 0.3)
+            cy1, cx1 = max(0, y1 - pad), max(0, x1 - pad)
+            cy2, cx2 = min(h, y2 + pad), min(w, x2 + pad)
+            crop = image[cy1:cy2, cx1:cx2]
+            _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            results.append({
+                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                "score": float(face.det_score),
+                "embedding": face.embedding,
+                "crop_bytes": buf.tobytes(),
+            })
+    except Exception as e:
+        log.warning("persons.detect_all_faces_error", error=str(e))
+    return results
+
+
 # --- Schemas ---
+
+class TagFaceRequest(BaseModel):
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    person_id: str | None = None  # Existing person
+    new_person_name: str | None = None  # Create new person
+    new_person_role: str | None = None
+    new_person_department: str | None = None
+
 
 class PersonCreate(BaseModel):
     name: str
@@ -787,6 +822,451 @@ async def delete_unknown_face(
     # Delete the unknown face
     await db.execute(text("DELETE FROM unknown_faces WHERE id = :fid"), {"fid": fid})
     await db.commit()
+
+
+@router.post("/detect-faces-in-image")
+async def detect_faces_in_image(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """Detect all faces in an uploaded image. Returns face bounding boxes."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    face_app = await _get_face_app()
+    all_faces = await asyncio.to_thread(_detect_all_faces_insightface, face_app, img)
+
+    return {
+        "faces": [
+            {"bbox": f["bbox"], "score": f["score"]}
+            for f in all_faces
+        ],
+        "image_width": img.shape[1],
+        "image_height": img.shape[0],
+    }
+
+
+@router.get("/unknown-faces/{face_id}/all-faces")
+async def detect_all_faces_in_unknown(
+    face_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Detect all faces in the full snapshot of an unknown face."""
+    from sqlalchemy import text
+
+    fid = uuid.UUID(face_id)
+    result = await db.execute(
+        text("SELECT thumbnail_path FROM unknown_faces WHERE id = :fid"),
+        {"fid": fid},
+    )
+    row = result.first()
+    if not row or not row[0]:
+        raise HTTPException(404, "Unknown face not found")
+
+    thumbnail_path = row[0]
+    parts = thumbnail_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(404, "Invalid path")
+
+    bucket, object_name = parts[0], parts[1]
+    full_object = object_name.rsplit(".", 1)[0] + "_full.jpg"
+
+    # Try full snapshot first, fallback to thumbnail
+    minio = get_minio_client()
+    img_bytes = None
+    for obj_name in [full_object, object_name]:
+        try:
+            data = minio.get_object(bucket, obj_name)
+            img_bytes = data.read()
+            data.close()
+            data.release_conn()
+            break
+        except Exception:
+            continue
+
+    if not img_bytes:
+        raise HTTPException(404, "Snapshot not available")
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Could not decode snapshot image")
+
+    face_app = await _get_face_app()
+    all_faces = await asyncio.to_thread(_detect_all_faces_insightface, face_app, img)
+
+    return {
+        "faces": [
+            {"bbox": f["bbox"], "score": f["score"]}
+            for f in all_faces
+        ],
+        "image_width": img.shape[1],
+        "image_height": img.shape[0],
+    }
+
+
+@router.get("/events/{event_id}/detect-faces")
+async def detect_faces_in_event(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Detect all faces in an event's snapshot."""
+    from sqlalchemy import text
+
+    eid = uuid.UUID(event_id)
+    event_row = await db.execute(
+        text("SELECT snapshot_path, thumbnail_path FROM events WHERE id = :eid"),
+        {"eid": eid},
+    )
+    event = event_row.first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    snapshot_path = event[0] or event[1]
+    if not snapshot_path:
+        raise HTTPException(status_code=400, detail="Event has no snapshot image")
+
+    parts = snapshot_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid snapshot path")
+
+    bucket, object_name = parts[0], parts[1]
+    try:
+        minio = get_minio_client()
+        obj = minio.get_object(bucket, object_name)
+        img_bytes = obj.read()
+        obj.close()
+        obj.release_conn()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not load snapshot: {e}")
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode snapshot image")
+
+    face_app = await _get_face_app()
+    all_faces = await asyncio.to_thread(_detect_all_faces_insightface, face_app, img)
+
+    return {
+        "faces": [
+            {"bbox": f["bbox"], "score": f["score"]}
+            for f in all_faces
+        ],
+        "image_width": img.shape[1],
+        "image_height": img.shape[0],
+    }
+
+
+@router.post("/events/{event_id}/tag-face")
+async def tag_face_in_event(
+    event_id: str,
+    data: TagFaceRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Manually select a face region in an event snapshot and assign to person."""
+    from sqlalchemy import text
+
+    if not data.person_id and not data.new_person_name:
+        raise HTTPException(status_code=400, detail="Either person_id or new_person_name is required")
+
+    eid = uuid.UUID(event_id)
+
+    # Load event snapshot
+    event_row = await db.execute(
+        text("SELECT snapshot_path, thumbnail_path FROM events WHERE id = :eid"),
+        {"eid": eid},
+    )
+    event = event_row.first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    snapshot_path = event[0] or event[1]
+    if not snapshot_path:
+        raise HTTPException(status_code=400, detail="Event has no snapshot image")
+
+    parts = snapshot_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid snapshot path")
+
+    bucket, object_name = parts[0], parts[1]
+    try:
+        minio = get_minio_client()
+        obj = minio.get_object(bucket, object_name)
+        img_bytes = obj.read()
+        obj.close()
+        obj.release_conn()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not load snapshot: {e}")
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode snapshot image")
+
+    # Crop the selected face region
+    h, w = img.shape[:2]
+    x1 = max(0, min(data.x1, w))
+    y1 = max(0, min(data.y1, h))
+    x2 = max(0, min(data.x2, w))
+    y2 = max(0, min(data.y2, h))
+    if x2 <= x1 or y2 <= y1:
+        raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
+
+    face_crop = img[y1:y2, x1:x2]
+
+    # Run InsightFace on the crop to get embedding
+    face_app = await _get_face_app()
+    embedding = None
+    face_detected = False
+    try:
+        emb, _ = await asyncio.to_thread(
+            _detect_and_embed_insightface, face_app, face_crop, img_bytes
+        )
+        if emb is not None:
+            embedding = emb
+            face_detected = True
+    except Exception as e:
+        log.warning("persons.tag_face_embed_error", error=str(e))
+
+    # Resolve or create person
+    if data.new_person_name:
+        person = Person(
+            name=data.new_person_name,
+            role=data.new_person_role,
+            department=data.new_person_department,
+        )
+        db.add(person)
+        await db.commit()
+        await db.refresh(person)
+        pid = person.id
+        person_name = person.name
+    else:
+        pid = uuid.UUID(data.person_id)
+        result = await db.execute(select(Person).where(Person.id == pid))
+        person = result.scalar_one_or_none()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        person_name = person.name
+
+    # Save face crop to MinIO
+    _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    crop_bytes = buf.tobytes()
+    photo_id = str(uuid.uuid4())
+    photo_path = f"snapshots/faces/{pid}/{photo_id}.jpg"
+    try:
+        minio = get_minio_client()
+        minio.put_object(
+            "snapshots",
+            f"faces/{pid}/{photo_id}.jpg",
+            io.BytesIO(crop_bytes),
+            len(crop_bytes),
+            content_type="image/jpeg",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save face crop: {e}")
+
+    # Save embedding to face_embeddings
+    new_id = uuid.uuid4()
+    if embedding is not None:
+        emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
+                VALUES (:id, :person_id, CAST(:embedding AS vector), :photo_path, 'manual_tag')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "embedding": emb_str,
+                "photo_path": photo_path,
+            },
+        )
+    else:
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, photo_path, source)
+                VALUES (:id, :person_id, :photo_path, 'manual_tag')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "photo_path": photo_path,
+            },
+        )
+
+    await db.commit()
+
+    return {
+        "message": f"Rostro etiquetado y asignado a {person_name}",
+        "person_id": str(pid),
+        "person_name": person_name,
+        "face_detected": face_detected,
+        "photo_path": photo_path,
+    }
+
+
+@router.post("/unknown-faces/{face_id}/tag-face")
+async def tag_face_in_unknown(
+    face_id: str,
+    data: TagFaceRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Manually select a face in unknown face snapshot and assign to person."""
+    from sqlalchemy import text
+
+    if not data.person_id and not data.new_person_name:
+        raise HTTPException(status_code=400, detail="Either person_id or new_person_name is required")
+
+    fid = uuid.UUID(face_id)
+
+    # Load snapshot from MinIO (same logic as get_unknown_face_snapshot)
+    result = await db.execute(
+        text("SELECT thumbnail_path FROM unknown_faces WHERE id = :fid"),
+        {"fid": fid},
+    )
+    row = result.first()
+    if not row or not row[0]:
+        raise HTTPException(404, "Unknown face not found")
+
+    thumbnail_path = row[0]
+    parts = thumbnail_path.split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(404, "Invalid path")
+
+    bucket, object_name = parts[0], parts[1]
+    full_object = object_name.rsplit(".", 1)[0] + "_full.jpg"
+
+    # Try full snapshot first, fallback to thumbnail
+    minio = get_minio_client()
+    img_bytes = None
+    for obj_name in [full_object, object_name]:
+        try:
+            obj = minio.get_object(bucket, obj_name)
+            img_bytes = obj.read()
+            obj.close()
+            obj.release_conn()
+            break
+        except Exception:
+            continue
+
+    if not img_bytes:
+        raise HTTPException(404, "Snapshot not available")
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Could not decode snapshot image")
+
+    # Crop the selected face region
+    h, w = img.shape[:2]
+    x1 = max(0, min(data.x1, w))
+    y1 = max(0, min(data.y1, h))
+    x2 = max(0, min(data.x2, w))
+    y2 = max(0, min(data.y2, h))
+    if x2 <= x1 or y2 <= y1:
+        raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
+
+    face_crop = img[y1:y2, x1:x2]
+
+    # Run InsightFace on the crop to get embedding
+    face_app = await _get_face_app()
+    embedding = None
+    face_detected = False
+    try:
+        emb, _ = await asyncio.to_thread(
+            _detect_and_embed_insightface, face_app, face_crop, img_bytes
+        )
+        if emb is not None:
+            embedding = emb
+            face_detected = True
+    except Exception as e:
+        log.warning("persons.tag_unknown_face_embed_error", error=str(e))
+
+    # Resolve or create person
+    if data.new_person_name:
+        person = Person(
+            name=data.new_person_name,
+            role=data.new_person_role,
+            department=data.new_person_department,
+        )
+        db.add(person)
+        await db.commit()
+        await db.refresh(person)
+        pid = person.id
+        person_name = person.name
+    else:
+        pid = uuid.UUID(data.person_id)
+        result = await db.execute(select(Person).where(Person.id == pid))
+        person = result.scalar_one_or_none()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        person_name = person.name
+
+    # Save face crop to MinIO
+    _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    crop_bytes = buf.tobytes()
+    photo_id = str(uuid.uuid4())
+    photo_path = f"snapshots/faces/{pid}/{photo_id}.jpg"
+    try:
+        minio = get_minio_client()
+        minio.put_object(
+            "snapshots",
+            f"faces/{pid}/{photo_id}.jpg",
+            io.BytesIO(crop_bytes),
+            len(crop_bytes),
+            content_type="image/jpeg",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save face crop: {e}")
+
+    # Save embedding to face_embeddings
+    new_id = uuid.uuid4()
+    if embedding is not None:
+        emb_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, embedding, photo_path, source)
+                VALUES (:id, :person_id, CAST(:embedding AS vector), :photo_path, 'manual_tag')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "embedding": emb_str,
+                "photo_path": photo_path,
+            },
+        )
+    else:
+        await db.execute(
+            text("""
+                INSERT INTO face_embeddings (id, person_id, photo_path, source)
+                VALUES (:id, :person_id, :photo_path, 'manual_tag')
+            """),
+            {
+                "id": new_id,
+                "person_id": pid,
+                "photo_path": photo_path,
+            },
+        )
+
+    # Delete from unknown_faces since it's been identified
+    await db.execute(text("DELETE FROM unknown_faces WHERE id = :fid"), {"fid": fid})
+    await db.commit()
+
+    return {
+        "message": f"Rostro etiquetado y asignado a {person_name}",
+        "person_id": str(pid),
+        "person_name": person_name,
+        "face_detected": face_detected,
+        "photo_path": photo_path,
+    }
 
 
 @router.post("/import-nvr-faces")

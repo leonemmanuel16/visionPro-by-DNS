@@ -26,7 +26,10 @@ import {
   Clock,
   Eye,
   ZoomIn,
+  ScanFace,
 } from "lucide-react";
+import { FaceSelector } from "@/components/FaceSelector";
+import { FaceTagModal } from "@/components/FaceTagModal";
 
 interface Person {
   id: string;
@@ -87,6 +90,80 @@ export default function DatabasePage() {
   const [identifyRole, setIdentifyRole] = useState("Visitante");
   const [identifyDept, setIdentifyDept] = useState("Externo");
   const [identifyError, setIdentifyError] = useState("");
+
+  // All-faces modal state (multi-face detection for unknown faces)
+  const [showAllFacesModal, setShowAllFacesModal] = useState(false);
+  const [allFacesData, setAllFacesData] = useState<{
+    faces: Array<{ bbox: { x1: number; y1: number; x2: number; y2: number }; score: number }>;
+    image_url: string;
+    image_width: number;
+    image_height: number;
+  } | null>(null);
+  const [allFacesSourceId, setAllFacesSourceId] = useState<string>("");
+  const [allFacesLoading, setAllFacesLoading] = useState(false);
+  const [selectedFaceBbox, setSelectedFaceBbox] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [showFaceTagModal, setShowFaceTagModal] = useState(false);
+
+  const handleViewAllFaces = async (faceId: string) => {
+    setAllFacesLoading(true);
+    setAllFacesSourceId(faceId);
+    try {
+      const result = await api.get<any>(`/unknown-faces/${faceId}/all-faces`);
+      if (result) {
+        setAllFacesData({
+          faces: result.faces || [],
+          image_url: result.image_url || `${getApiUrl()}/api/v1/unknown-faces/${faceId}/snapshot`,
+          image_width: result.image_width || 640,
+          image_height: result.image_height || 480,
+        });
+        setShowAllFacesModal(true);
+      }
+    } catch (e: any) {
+      alert(e?.message || "Error al obtener los rostros detectados");
+    } finally {
+      setAllFacesLoading(false);
+    }
+  };
+
+  const handleFaceTagSave = (personId: string, isNew: boolean) => {
+    setShowFaceTagModal(false);
+    setSelectedFaceBbox(null);
+    // Refresh unknown faces list
+    api.get<any[]>("/unknown-faces").then((data) => {
+      if (data && Array.isArray(data)) {
+        const colors = ["bg-rose-200", "bg-amber-200", "bg-sky-200", "bg-emerald-200", "bg-violet-200", "bg-pink-200", "bg-teal-200"];
+        setUnknownFaces(data.map((f: any, i: number) => ({
+          id: f.id,
+          thumbnailColor: colors[i % colors.length],
+          thumbnailPath: f.thumbnail_path || "",
+          firstSeen: f.first_seen || "",
+          lastSeen: f.last_seen || "",
+          camera: f.camera_id || "",
+          detectionCount: f.detection_count || 1,
+          daysRemaining: f.days_remaining || 30,
+        })));
+      }
+    }).catch(() => {});
+    // Refresh persons
+    api.get<any[]>("/persons").then((data) => {
+      if (data && Array.isArray(data)) {
+        setPeople(data.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          role: p.role || "Empleado",
+          department: p.department || "",
+          photos: [],
+          photoCount: p.photo_count || 0,
+          lastSeen: "",
+          lastCamera: "",
+          status: p.is_active ? "active" : "inactive",
+          created_at: p.created_at?.split("T")[0] || "",
+        })));
+      }
+    }).catch(() => {});
+    setShowAllFacesModal(false);
+    setAllFacesData(null);
+  };
 
   // Form state
   const [formData, setFormData] = useState({
@@ -650,25 +727,46 @@ export default function DatabasePage() {
                           <p><span className="font-medium text-gray-700">Última vez:</span> {face.lastSeen}</p>
                           <p><span className="font-medium text-gray-700">Cámara:</span> {face.camera}</p>
                         </div>
-                        <div className="flex gap-1.5 pt-1">
+                        <div className="flex flex-col gap-1.5 pt-1">
                           <Button
                             size="sm"
-                            className="flex-1 text-xs h-7"
-                            onClick={() => {
-                              setSelectedUnknown(face);
-                              setShowIdentifyModal(true);
-                            }}
+                            variant="outline"
+                            className="w-full text-xs h-7"
+                            onClick={() => handleViewAllFaces(face.id)}
+                            disabled={allFacesLoading && allFacesSourceId === face.id}
                           >
-                            <UserPlus className="h-3 w-3 mr-1" />
-                            Identificar
+                            {allFacesLoading && allFacesSourceId === face.id ? (
+                              <span className="flex items-center gap-1">
+                                <span className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />
+                                Cargando...
+                              </span>
+                            ) : (
+                              <>
+                                <ScanFace className="h-3 w-3 mr-1" />
+                                Ver Todos los Rostros
+                              </>
+                            )}
                           </Button>
-                          <button
-                            onClick={() => handleDeleteUnknown(face.id)}
-                            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded h-7 w-7 flex items-center justify-center"
-                            title="Eliminar"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="flex gap-1.5">
+                            <Button
+                              size="sm"
+                              className="flex-1 text-xs h-7"
+                              onClick={() => {
+                                setSelectedUnknown(face);
+                                setShowIdentifyModal(true);
+                              }}
+                            >
+                              <UserPlus className="h-3 w-3 mr-1" />
+                              Identificar
+                            </Button>
+                            <button
+                              onClick={() => handleDeleteUnknown(face.id)}
+                              className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded h-7 w-7 flex items-center justify-center"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -910,6 +1008,55 @@ export default function DatabasePage() {
           />
         </div>
       )}
+
+      {/* All Faces Modal (multi-face detection) */}
+      {showAllFacesModal && allFacesData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Todos los Rostros Detectados</h2>
+                <p className="text-sm text-gray-500">
+                  {allFacesData.faces.length} rostro{allFacesData.faces.length !== 1 ? "s" : ""} detectado{allFacesData.faces.length !== 1 ? "s" : ""}. Haz clic en uno para etiquetarlo.
+                </p>
+              </div>
+              <button
+                onClick={() => { setShowAllFacesModal(false); setAllFacesData(null); setSelectedFaceBbox(null); }}
+                className="p-1 rounded-md hover:bg-gray-100 text-gray-500"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1">
+              <FaceSelector
+                imageUrl={allFacesData.image_url}
+                faces={allFacesData.faces}
+                imageWidth={allFacesData.image_width}
+                imageHeight={allFacesData.image_height}
+                onSelectFace={(bbox) => {
+                  setSelectedFaceBbox(bbox);
+                  setShowFaceTagModal(true);
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-3 p-5 border-t border-gray-200">
+              <Button variant="outline" onClick={() => { setShowAllFacesModal(false); setAllFacesData(null); setSelectedFaceBbox(null); }}>
+                Cerrar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Face Tag Modal (for tagging individual faces from all-faces view) */}
+      <FaceTagModal
+        isOpen={showFaceTagModal}
+        onClose={() => { setShowFaceTagModal(false); setSelectedFaceBbox(null); }}
+        onSave={handleFaceTagSave}
+        faceBbox={selectedFaceBbox || undefined}
+        sourceType="unknown_face"
+        sourceId={allFacesSourceId}
+      />
 
       {/* Upload Photos Modal */}
       {showUploadModal && selectedPerson && (

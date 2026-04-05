@@ -386,46 +386,29 @@ class DetectorService:
                         except Exception:
                             pass
 
-                    if det.label == "person" and run_face:
-                        bw = det.bbox[2] - det.bbox[0]
-                        bh = det.bbox[3] - det.bbox[1]
-                        if bw < 40 or bh < 80 or (bw * bh) < 5000:
-                            continue
-                        try:
-                            match = await face_recognizer.recognize(frame, det.bbox)
-                            if match:
-                                if det.metadata is None:
-                                    det.metadata = {}
-                                det.metadata["person_id"] = match.person_id
-                                det.metadata["person_name"] = match.person_name
-                                det.metadata["face_confidence"] = f"{match.confidence:.2f}"
-                                det.label = f"person:{match.person_name}"
-                                face_result = face_recognizer.detect_and_encode(frame, det.bbox)
-                                if face_result:
-                                    face_locs, _ = face_result
-                                    if face_locs:
-                                        det.metadata["face_bbox"] = face_locs[0]
+                # Multi-face detection: detect all faces in full frame at once
+                if run_face and any(d.label.split(":")[0] == "person" for d in filtered):
+                    person_dets = [d for d in filtered if d.label.split(":")[0] == "person"]
+                    try:
+                        face_results = await face_recognizer.recognize_all_faces(frame, camera_id, person_dets)
+                        for result in face_results:
+                            # Find the detection with matching tracker_id and update its metadata
+                            for det in filtered:
+                                if det.tracker_id == result["tracker_id"]:
+                                    if det.metadata is None:
+                                        det.metadata = {}
+                                    if result.get("person_id"):
+                                        det.metadata["person_id"] = result["person_id"]
+                                        det.metadata["person_name"] = result["person_name"]
+                                        det.metadata["face_confidence"] = result["face_confidence"]
+                                        det.label = f"person:{result['person_name']}"
+                                    if result.get("face_detected"):
                                         det.metadata["face_detected"] = True
-                            else:
-                                result = face_recognizer.detect_and_encode(frame, det.bbox)
-                                if result:
-                                    face_locations, encodings = result
-                                    if encodings:
-                                        if det.metadata is None:
-                                            det.metadata = {}
-                                        det.metadata["face_detected"] = True
-                                        if face_locations:
-                                            det.metadata["face_bbox"] = face_locations[0]
-                                        face_loc = face_locations[0] if face_locations else None
-                                        await face_recognizer.save_unknown_face(
-                                            encoding=encodings[0],
-                                            camera_id=camera_id,
-                                            frame=frame,
-                                            person_bbox=det.bbox,
-                                            face_location=face_loc,
-                                        )
-                        except Exception as e:
-                            log.debug("face_recognition.error", error=str(e))
+                                    if result.get("face_bbox"):
+                                        det.metadata["face_bbox"] = result["face_bbox"]
+                                    break
+                    except Exception as e:
+                        log.debug("face_recognition.error", error=str(e))
 
                 # Publish real-time tracking positions via Redis pub/sub
                 if filtered:

@@ -297,9 +297,17 @@ class FaceRecognizer:
             return None
 
     def _save_face_thumbnail(
-        self, frame: np.ndarray, person_bbox: tuple, face_location: tuple | None = None
+        self, frame: np.ndarray, person_bbox: tuple, face_location: tuple | None = None,
+        face_bbox_abs: tuple | None = None,
     ) -> str | None:
-        """Crop and save face thumbnail to MinIO. Returns object path or None."""
+        """Crop and save face thumbnail to MinIO. Returns object path or None.
+
+        Args:
+            frame: Full BGR frame
+            person_bbox: (x1, y1, x2, y2) of the person detection
+            face_location: (top, right, bottom, left) relative to person crop (legacy)
+            face_bbox_abs: (x1, y1, x2, y2) in absolute frame coordinates (takes priority)
+        """
         if not self.minio:
             return None
         try:
@@ -308,8 +316,22 @@ class FaceRecognizer:
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
 
-            if face_location:
-                # face_location is (top, right, bottom, left)
+            if face_bbox_abs:
+                # Absolute frame coordinates (x1, y1, x2, y2)
+                fx1, fy1, fx2, fy2 = [int(c) for c in face_bbox_abs]
+                face_h = fy2 - fy1
+                face_w = fx2 - fx1
+                if face_h < 30 or face_w < 30:
+                    log.debug("face_recognizer.face_too_small", face_h=face_h, face_w=face_w)
+                    return None
+                pad_h = int(face_h * 0.5)
+                pad_w = int(face_w * 0.5)
+                crop = frame[
+                    max(0, fy1 - pad_h): min(h, fy2 + pad_h),
+                    max(0, fx1 - pad_w): min(w, fx2 + pad_w),
+                ]
+            elif face_location:
+                # face_location is (top, right, bottom, left) relative to person crop
                 ft, fr, fb, fl = face_location
                 face_h = fb - ft
                 face_w = fr - fl
@@ -359,6 +381,122 @@ class FaceRecognizer:
             log.warning("face_recognizer.save_thumbnail_failed", error=str(e))
             return None
 
+    async def recognize_all_faces(self, frame: np.ndarray, camera_id: str, person_detections: list) -> list[dict]:
+        """Detect ALL faces in the full frame and match/save each one.
+
+        Args:
+            frame: Full BGR frame
+            camera_id: Camera UUID string
+            person_detections: List of tracked detections with .bbox, .tracker_id, .metadata
+
+        Returns:
+            List of face results: [{tracker_id, person_id, person_name, face_confidence, face_bbox, face_detected}]
+        """
+        if not self._available or self._app is None:
+            return []
+
+        await self._refresh_cache()
+
+        # Run face detection on the full frame (single inference for all faces)
+        try:
+            faces = self._app.get(frame)
+        except Exception as e:
+            log.warning("face_recognizer.full_frame_detect_error", error=str(e))
+            return []
+
+        if not faces:
+            return []
+
+        results = []
+        h, w = frame.shape[:2]
+
+        for face in faces:
+            fb = face.bbox  # [x1, y1, x2, y2] in frame coordinates
+            fw = fb[2] - fb[0]
+            fh = fb[3] - fb[1]
+            if fw < 20 or fh < 20:
+                continue
+
+            # Face center point
+            face_cx = (fb[0] + fb[2]) / 2.0
+            face_cy = (fb[1] + fb[3]) / 2.0
+
+            # Find which person detection contains this face center
+            matched_det = None
+            for det in person_detections:
+                px1, py1, px2, py2 = det.bbox
+                if px1 <= face_cx <= px2 and py1 <= face_cy <= py2:
+                    matched_det = det
+                    break
+
+            if matched_det is None:
+                continue
+
+            face_bbox_abs = (int(fb[0]), int(fb[1]), int(fb[2]), int(fb[3]))
+            embedding = face.embedding
+
+            result = {
+                "tracker_id": matched_det.tracker_id,
+                "face_detected": True,
+                "face_bbox": (int(fb[1]), int(fb[2]), int(fb[3]), int(fb[0])),  # (top, right, bottom, left)
+            }
+
+            # Compare against known faces
+            if self._known_cache:
+                person_scores: dict[str, list[float]] = {}
+                person_names: dict[str, str] = {}
+
+                for person_id, name, known_encoding in self._known_cache:
+                    similarity = _cosine_similarity(embedding, known_encoding)
+                    person_names[person_id] = name
+                    if person_id not in person_scores:
+                        person_scores[person_id] = []
+                    if similarity >= FACE_MATCH_THRESHOLD:
+                        person_scores[person_id].append(similarity)
+
+                best_match = None
+                best_score = (0, 0.0)
+
+                for person_id, similarities in person_scores.items():
+                    if not similarities:
+                        continue
+                    vote_count = len(similarities)
+                    avg_sim = sum(similarities) / len(similarities)
+                    if (vote_count, avg_sim) > best_score:
+                        best_score = (vote_count, avg_sim)
+                        best_match = (person_id, person_names[person_id], avg_sim)
+
+                if best_match:
+                    result["person_id"] = best_match[0]
+                    result["person_name"] = best_match[1]
+                    result["face_confidence"] = f"{best_match[2]:.2f}"
+                    log.info("face_recognizer.multi_match", person=best_match[1],
+                             similarity=f"{best_match[2]:.3f}")
+                else:
+                    # No match — save as unknown
+                    await self.save_unknown_face(
+                        encoding=embedding,
+                        camera_id=camera_id,
+                        frame=frame,
+                        person_bbox=matched_det.bbox,
+                        face_bbox_abs=face_bbox_abs,
+                    )
+            else:
+                # No known faces in cache — save as unknown
+                await self.save_unknown_face(
+                    encoding=embedding,
+                    camera_id=camera_id,
+                    frame=frame,
+                    person_bbox=matched_det.bbox,
+                    face_bbox_abs=face_bbox_abs,
+                )
+
+            results.append(result)
+
+        log.info("face_recognizer.multi_face_done", faces_detected=len(faces),
+                 results=len(results))
+        return results
+
     async def save_unknown_face(
         self,
         encoding: np.ndarray,
@@ -366,6 +504,7 @@ class FaceRecognizer:
         frame: np.ndarray | None = None,
         person_bbox: tuple | None = None,
         face_location: tuple | None = None,
+        face_bbox_abs: tuple | None = None,
     ) -> None:
         """Save an unknown face to the DB for later identification.
 
@@ -385,7 +524,7 @@ class FaceRecognizer:
             # Save thumbnail image
             thumbnail_path = ""
             if frame is not None and person_bbox is not None:
-                path = self._save_face_thumbnail(frame, person_bbox, face_location)
+                path = self._save_face_thumbnail(frame, person_bbox, face_location, face_bbox_abs=face_bbox_abs)
                 if path:
                     thumbnail_path = path
 
