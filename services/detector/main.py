@@ -33,6 +33,7 @@ from person_attributes import extract_person_attributes
 from vehicle_attributes import extract_vehicle_attributes
 from best_shot import BestShotSelector
 from ring_buffer import RingBuffer, create_clip, save_clip_to_minio
+from event_validator import EventValidator
 
 structlog.configure(
     processors=[
@@ -74,6 +75,7 @@ class DetectorService:
         self.camera_tasks: dict[str, asyncio.Task] = {}
         self.thread_pool = ThreadPoolExecutor(max_workers=8)
         self.batch_detector: BatchDetector | None = None
+        self.event_validator: EventValidator | None = None
 
     async def start(self):
         log.info("detector.starting", model=self.model_name, fps=self.detection_fps,
@@ -105,6 +107,13 @@ class DetectorService:
             batch_timeout=0.05,
         )
         await self.batch_detector.start()
+
+        # Initialize event validator (post-publish false positive elimination)
+        self.event_validator = EventValidator(
+            detector=detector,
+            db_pool=self.db_pool,
+        )
+        await self.event_validator.start()
 
         # Initialize event publisher
         publisher = EventPublisher(
@@ -378,28 +387,33 @@ class DetectorService:
                     base_label = det.label.split(":")[0]
 
                     # Extract clothing colors and headgear for persons
+                    # Skip if crop region is low quality (avoids inventing colors from gray frames)
                     if base_label == "person":
                         try:
-                            attrs = extract_person_attributes(frame, det.bbox)
-                            if det.metadata is None:
-                                det.metadata = {}
-                            det.metadata["upper_color"] = attrs["upper_color"]
-                            det.metadata["lower_color"] = attrs["lower_color"]
-                            det.metadata["headgear"] = attrs["headgear"]
+                            crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
+                            if crop_quality["is_valid"] and crop_quality.get("variance", 0) >= 400:
+                                attrs = extract_person_attributes(frame, det.bbox)
+                                if det.metadata is None:
+                                    det.metadata = {}
+                                det.metadata["upper_color"] = attrs["upper_color"]
+                                det.metadata["lower_color"] = attrs["lower_color"]
+                                det.metadata["headgear"] = attrs["headgear"]
                         except Exception:
                             pass
 
                     # Extract vehicle attributes (color, type, plate)
                     if base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
                         try:
-                            vattrs = extract_vehicle_attributes(frame, det.bbox, yolo_label=base_label)
-                            if det.metadata is None:
-                                det.metadata = {}
-                            det.metadata["vehicle_color"] = vattrs["vehicle_color"]
-                            det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
-                            det.metadata["vehicle_type"] = vattrs["vehicle_type"]
-                            if vattrs.get("license_plate"):
-                                det.metadata["license_plate"] = vattrs["license_plate"]
+                            crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
+                            if crop_quality["is_valid"]:
+                                vattrs = extract_vehicle_attributes(frame, det.bbox, yolo_label=base_label)
+                                if det.metadata is None:
+                                    det.metadata = {}
+                                det.metadata["vehicle_color"] = vattrs["vehicle_color"]
+                                det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
+                                det.metadata["vehicle_type"] = vattrs["vehicle_type"]
+                                if vattrs.get("license_plate"):
+                                    det.metadata["license_plate"] = vattrs["license_plate"]
                         except Exception:
                             pass
 
@@ -500,6 +514,18 @@ class DetectorService:
                                                   current_frame=frame)
 
                 for buf, candidate in ready_events:
+                    # ── PRE-PUBLISH QUALITY GATE ──
+                    quality = EventValidator.check_frame_quality(
+                        candidate.frame, candidate.bbox
+                    )
+                    if not quality["is_valid"]:
+                        log.info("event.pre_publish_rejected",
+                                 camera=camera_name,
+                                 label=buf.label,
+                                 reason=quality["reason"],
+                                 tracker_id=buf.tracker_id)
+                        continue
+
                     best_det = TD(
                         bbox=candidate.bbox,
                         label=buf.label,
@@ -509,6 +535,13 @@ class DetectorService:
                         is_new=True,
                         metadata=candidate.metadata,
                     )
+
+                    # Skip clothing color extraction if crop quality is poor
+                    base_label_pub = buf.label.split(":")[0]
+                    if base_label_pub == "person" and quality.get("variance", 9999) < 400:
+                        if best_det.metadata:
+                            for key in ("upper_color", "lower_color", "headgear"):
+                                best_det.metadata.pop(key, None)
 
                     # Create video clip from ring buffer
                     clip_path = None
@@ -530,13 +563,23 @@ class DetectorService:
                     except Exception as e:
                         log.debug("ring_buffer.clip_error", error=str(e))
 
-                    await publisher.publish(
+                    event_id = await publisher.publish(
                         camera_id=camera_id,
                         camera_name=camera_name,
                         detection=best_det,
                         frame=candidate.frame,
                         clip_path=clip_path,
                     )
+
+                    # ── POST-PUBLISH VALIDATION ──
+                    if event_id and self.event_validator:
+                        await self.event_validator.submit(
+                            event_id=event_id,
+                            frame=candidate.frame,
+                            bbox=candidate.bbox,
+                            label=buf.label,
+                            confidence=candidate.confidence,
+                        )
 
                 await asyncio.sleep(frame_interval)
 
@@ -627,6 +670,9 @@ class DetectorService:
 
     async def stop(self):
         self.running = False
+        # Stop event validator
+        if self.event_validator:
+            await self.event_validator.stop()
         # Stop batch detector first (unblocks waiting camera loops)
         if self.batch_detector:
             await self.batch_detector.stop()

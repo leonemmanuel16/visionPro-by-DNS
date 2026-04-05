@@ -222,8 +222,8 @@ class EventPublisher:
         detection: TrackedDetection,
         frame: np.ndarray,
         clip_path: str | None = None,
-    ) -> None:
-        """Process and publish a detection event."""
+    ) -> str | None:
+        """Process and publish a detection event. Returns event_id if published."""
         self._cleanup_caches()
 
         tid = detection.tracker_id if hasattr(detection, "tracker_id") else None
@@ -239,25 +239,25 @@ class EventPublisher:
             if not moving:
                 # Stationary vehicle — check if we already published one at this location
                 if self._is_duplicate_vehicle(camera_id, detection.bbox):
-                    return  # Already known parked vehicle → suppress completely
+                    return None  # Already known parked vehicle → suppress completely
 
                 # First time seeing a vehicle parked here
                 if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
-                    return
+                    return None
 
                 # Publish once, then remember this spot
                 self._remember_parked_vehicle(camera_id, detection.bbox)
             else:
                 # Vehicle is moving — apply normal debounce (24h per tracker, so effectively once)
                 if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
-                    return
+                    return None
                 # It moved away from a parked spot — forget that spot
                 self._forget_vehicle_at(camera_id, detection.bbox)
 
         # ── NON-VEHICLE LOGIC ──────────────────────────────────────────
         else:
             if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
-                return
+                return None
 
         # ── Save & publish ─────────────────────────────────────────────
         event_id = str(uuid.uuid4())
@@ -333,6 +333,8 @@ class EventPublisher:
             confidence=f"{detection.confidence:.2f}",
             moving=metadata.get("vehicle_moving") if is_vehicle else None,
         )
+
+        return event_id
 
     # ------------------------------------------------------------------
     # Person count
