@@ -60,7 +60,9 @@ interface Point { x: number; y: number; }
 
 // Per-detection zone data: up to 4 zones per detection
 interface DetZoneData {
-  zones: { id: string; name: string; points: Point[]; apiId?: string }[];
+  zones: { id: string; name: string; points: Point[]; apiId?: string; direction?: "A_to_B" | "B_to_A" | "both" }[];
+  schedule?: { enabled: boolean; startTime: string; endTime: string };
+  subOptions?: Record<string, boolean>;
 }
 
 const DETECTION_CAPABILITIES = [
@@ -73,7 +75,7 @@ const DETECTION_CAPABILITIES = [
   { id: "line_crossing", label: "Cruce de Linea", icon: ArrowLeftRight, color: "text-pink-600", bg: "bg-pink-50", border: "border-pink-500", desc: "Detectar cuando alguien cruza una linea virtual" },
   { id: "person_count", label: "Conteo de Personas", icon: Users, color: "text-teal-600", bg: "bg-teal-50", border: "border-teal-500", desc: "Contar personas en una zona definida" },
   { id: "loitering", label: "Merodeo", icon: Footprints, color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-500", desc: "Personas que permanecen mucho tiempo" },
-  { id: "abandoned_object", label: "Objeto Abandonado", icon: Package, color: "text-gray-600", bg: "bg-gray-50", border: "border-gray-500", desc: "Objetos dejados sin supervision" },
+  { id: "abandoned_object", label: "Objeto Abandonado", icon: Package, color: "text-gray-600", bg: "bg-gray-50", border: "border-gray-500", desc: "Objetos dejados o removidos sin supervision" },
 ];
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -238,7 +240,11 @@ export default function CameraDetailPage() {
   const toggleDetection = (detId: string) => {
     const wasEnabled = enabledDetections.includes(detId);
     setEnabledDetections((prev) => {
-      const next = wasEnabled ? prev.filter((d) => d !== detId) : [...prev, detId];
+      let next = wasEnabled ? prev.filter((d) => d !== detId) : [...prev, detId];
+      // person_count requires line_crossing
+      if (detId === "person_count" && !wasEnabled && !next.includes("line_crossing")) {
+        next = [...next, "line_crossing"];
+      }
       const shouldBeOn = next.length > 0;
       const wasOn = camera?.is_enabled ?? false;
       if (shouldBeOn !== wasOn) {
@@ -277,14 +283,17 @@ export default function CameraDetailPage() {
     if (!selectedDetection || drawingPoints.length < minPts) return;
     const existing = detZones[selectedDetection]?.zones || [];
     if (existing.length >= MAX_ZONES_PER_DET) return;
-    const newZone = {
+    const newZone: any = {
       id: `zone_${Date.now()}`,
-      name: `Zona ${existing.length + 1}`,
+      name: selectedDetection === "line_crossing" ? `Linea ${existing.length + 1}` : `Zona ${existing.length + 1}`,
       points: drawingPoints,
     };
+    if (selectedDetection === "line_crossing") {
+      newZone.direction = "both";
+    }
     setDetZones((prev) => ({
       ...prev,
-      [selectedDetection]: { zones: [...(prev[selectedDetection]?.zones || []), newZone] },
+      [selectedDetection]: { ...prev[selectedDetection], zones: [...(prev[selectedDetection]?.zones || []), newZone] },
     }));
     setIsDrawing(false);
     setDrawingPoints([]);
@@ -323,20 +332,41 @@ export default function CameraDetailPage() {
       const minPoints = detId === "line_crossing" ? 2 : 3;
       for (const zone of data.zones) {
         if (zone.points.length < minPoints) continue;
+        const payload: any = {
+          name: zone.name, zone_type: zoneType, points: zone.points,
+          detect_classes: [detId], is_enabled: true,
+        };
+        if ((zone as any).direction) {
+          payload.direction = (zone as any).direction;
+        }
         if (zone.apiId) {
-          await api.put(`/zones/${zone.apiId}`, {
-            name: zone.name, zone_type: zoneType, points: zone.points,
-            detect_classes: [detId], is_enabled: true,
-          }).catch(() => {});
+          await api.put(`/zones/${zone.apiId}`, payload).catch(() => {});
         } else {
           const res = await api.post<any>("/zones", {
-            camera_id: id, name: zone.name, zone_type: zoneType,
-            points: zone.points, detect_classes: [detId], is_enabled: true,
+            camera_id: id, ...payload,
           }).catch(() => null);
           if (res?.id) zone.apiId = res.id;
         }
       }
     }
+
+    // Save schedule and subOptions to camera config
+    const detConfig: Record<string, any> = {};
+    for (const [detId, data] of Object.entries(detZones)) {
+      if (data.schedule?.enabled) {
+        detConfig[`${detId}_schedule`] = data.schedule;
+      }
+      if (data.subOptions && Object.keys(data.subOptions).length > 0) {
+        detConfig[`${detId}_options`] = data.subOptions;
+      }
+    }
+    try {
+      await api.put(`/cameras/${id}/settings`, {
+        detections: enabledDetections,
+        image: imageSettings,
+        detection_config: detConfig,
+      });
+    } catch (_e) {}
 
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -405,13 +435,16 @@ export default function CameraDetailPage() {
     const data = detZones[detId];
     if (!data) return;
     data.zones.forEach((z) => {
-      if (z.points.length >= 3) {
+      const minPts = detId === "line_crossing" ? 2 : 3;
+      if (z.points.length >= minPts) {
         allZonePolygons.push({
           id: z.id,
           name: z.name,
           points: z.points,
           color: getZoneColor(colorIdx).stroke,
-        });
+          direction: (z as any).direction,
+          type: detId === "line_crossing" ? "tripwire" : "roi",
+        } as any);
         colorIdx++;
       }
     });
@@ -463,6 +496,7 @@ export default function CameraDetailPage() {
                       currentPoints={drawingPoints}
                       onAddPoint={(p) => setDrawingPoints((prev) => [...prev, p])}
                       drawColor={drawColor}
+                      drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
                     />
                   )}
                   {/* Detection boxes */}
@@ -485,8 +519,8 @@ export default function CameraDetailPage() {
                     <XCircle className="h-3 w-3 mr-1" /> Cancelar
                   </Button>
                   <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700"
-                    onClick={saveCurrentZone} disabled={drawingPoints.length < 3}>
-                    <Save className="h-3 w-3 mr-1" /> Guardar Zona
+                    onClick={saveCurrentZone} disabled={drawingPoints.length < (selectedDetection === "line_crossing" ? 2 : 3)}>
+                    <Save className="h-3 w-3 mr-1" /> {selectedDetection === "line_crossing" ? "Guardar Linea" : "Guardar Zona"}
                   </Button>
                 </div>
               )}
@@ -547,8 +581,111 @@ export default function CameraDetailPage() {
                   {isDrawing && (
                     <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg">
                       <p className="text-xs text-blue-700 font-medium">
-                        Dibujando sobre el video. Haz clic para agregar puntos (min 3).
+                        {selectedDetection === "line_crossing"
+                          ? "Haz clic en 2 puntos para crear la linea de cruce."
+                          : "Dibujando sobre el video. Haz clic para agregar puntos (min 3)."}
                       </p>
+                    </div>
+                  )}
+
+                  {/* Direction selector for line_crossing */}
+                  {selectedDetection === "line_crossing" && selectedZones.length > 0 && (
+                    <div className="space-y-2 border-t pt-2">
+                      <p className="text-[10px] font-medium text-gray-500 uppercase">Direccion de cruce</p>
+                      {selectedZones.map((z, i) => (
+                        <div key={`dir-${z.id}`} className="flex items-center gap-2">
+                          <span className="text-xs text-gray-600 w-16">{z.name}:</span>
+                          <div className="flex gap-1">
+                            {(["A_to_B", "B_to_A", "both"] as const).map((dir) => (
+                              <button key={dir}
+                                onClick={() => {
+                                  setDetZones((prev) => {
+                                    const zones = [...(prev[selectedDetection!]?.zones || [])];
+                                    const idx = zones.findIndex(zz => zz.id === z.id);
+                                    if (idx >= 0) zones[idx] = { ...zones[idx], direction: dir };
+                                    return { ...prev, [selectedDetection!]: { ...prev[selectedDetection!], zones } };
+                                  });
+                                }}
+                                className={`px-2 py-1 text-[10px] rounded border ${
+                                  (z as any).direction === dir
+                                    ? "bg-pink-100 border-pink-400 text-pink-700 font-medium"
+                                    : "border-gray-200 text-gray-500 hover:bg-gray-50"
+                                }`}>
+                                {dir === "A_to_B" ? "A \u2192 B" : dir === "B_to_A" ? "B \u2192 A" : "Ambos"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Schedule */}
+                  <div className="border-t pt-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-medium text-gray-500 uppercase">Horario</p>
+                      <button
+                        onClick={() => {
+                          setDetZones((prev) => {
+                            const current = prev[selectedDetection!] || { zones: [] };
+                            const schedule = current.schedule?.enabled
+                              ? { enabled: false, startTime: "00:00", endTime: "23:59" }
+                              : { enabled: true, startTime: "08:00", endTime: "18:00" };
+                            return { ...prev, [selectedDetection!]: { ...current, schedule } };
+                          });
+                        }}
+                        className={`text-[10px] px-2 py-0.5 rounded border ${
+                          detZones[selectedDetection!]?.schedule?.enabled
+                            ? "bg-blue-50 border-blue-300 text-blue-700"
+                            : "border-gray-200 text-gray-500"
+                        }`}>
+                        {detZones[selectedDetection!]?.schedule?.enabled ? "Personalizado" : "24 Horas"}
+                      </button>
+                    </div>
+                    {detZones[selectedDetection!]?.schedule?.enabled && (
+                      <div className="flex items-center gap-2">
+                        <input type="time"
+                          value={detZones[selectedDetection!]?.schedule?.startTime || "08:00"}
+                          onChange={(e) => {
+                            setDetZones((prev) => {
+                              const current = prev[selectedDetection!] || { zones: [] };
+                              return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, startTime: e.target.value } } };
+                            });
+                          }}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded" />
+                        <span className="text-xs text-gray-400">a</span>
+                        <input type="time"
+                          value={detZones[selectedDetection!]?.schedule?.endTime || "18:00"}
+                          onChange={(e) => {
+                            setDetZones((prev) => {
+                              const current = prev[selectedDetection!] || { zones: [] };
+                              return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, endTime: e.target.value } } };
+                            });
+                          }}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Objeto Movido sub-option for abandoned_object */}
+                  {selectedDetection === "abandoned_object" && (
+                    <div className="border-t pt-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox"
+                          checked={detZones[selectedDetection]?.subOptions?.object_moved || false}
+                          onChange={(e) => {
+                            setDetZones((prev) => {
+                              const current = prev[selectedDetection!] || { zones: [] };
+                              const subOptions = { ...(current.subOptions || {}), object_moved: e.target.checked };
+                              return { ...prev, [selectedDetection!]: { ...current, subOptions } };
+                            });
+                          }}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                        <div>
+                          <p className="text-xs font-medium text-gray-700">Objeto Movido</p>
+                          <p className="text-[10px] text-gray-500">Alertar cuando un objeto es removido de su posicion</p>
+                        </div>
+                      </label>
                     </div>
                   )}
 
