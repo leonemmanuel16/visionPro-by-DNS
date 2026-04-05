@@ -62,11 +62,11 @@ class DetectorService:
         self.minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
         self.model_name = os.environ.get("MODEL_NAME", "yolo26s")
         self.detection_fps = int(os.environ.get("DETECTION_FPS", "5"))
-        self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.5"))
+        self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.40"))
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
         self.device = os.environ.get("DEVICE", "auto")
         self.ring_buffer_seconds = int(os.environ.get("RING_BUFFER_SECONDS", "15"))
-        self.max_batch_size = int(os.environ.get("MAX_BATCH_SIZE", "8"))
+        self.max_batch_size = int(os.environ.get("MAX_BATCH_SIZE", "16"))
         self.use_gpu_decode = os.environ.get("USE_GPU_DECODE", "true").lower() == "true"
 
         self.db_pool: asyncpg.Pool | None = None
@@ -104,7 +104,7 @@ class DetectorService:
         self.batch_detector = BatchDetector(
             detector,
             max_batch_size=self.max_batch_size,
-            batch_timeout=0.05,
+            batch_timeout=0.08,  # 80ms — collect more frames per batch for GPU efficiency
         )
         await self.batch_detector.start()
 

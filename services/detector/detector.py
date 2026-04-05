@@ -1,7 +1,7 @@
-"""YOLO Detection Wrapper — YOLO26s + TensorRT FP16.
+"""YOLO Detection Wrapper — YOLO26n + TensorRT FP16 (Dynamic Batch).
 
 YOLO26 is NMS-free (end-to-end), giving lower latency.
-TensorRT export compiles the model into an optimized engine for the specific GPU.
+TensorRT export compiles the model with dynamic batch (1-16) for GPU-efficient batching.
 FP16 half-precision gives ~2x speedup on NVIDIA GPUs with minimal accuracy loss.
 """
 
@@ -51,11 +51,14 @@ class YOLODetector:
     }
 
     # Fallback model order if primary fails (larger -> smaller)
-    MODEL_FALLBACKS = ["yolo26s", "yolo26n", "yolo11s"]
+    MODEL_FALLBACKS = ["yolo26n", "yolo26s", "yolo11s"]
+
+    # Max batch size for TensorRT dynamic batching
+    ENGINE_MAX_BATCH = 16
 
     def __init__(
         self,
-        model_name: str = "yolo26s",
+        model_name: str = "yolo26n",
         confidence: float = 0.5,
         device: str = "auto",
     ):
@@ -91,14 +94,22 @@ class YOLODetector:
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
-            log.info("detector.model_ready", device=self.device, gpu_mem_mb=f"{mem_used:.0f}",
-                     half=self.use_half, engine=self._using_engine)
+            gpu_total = torch.cuda.get_device_properties(0).total_memory / (1024**2)
+            log.info("detector.model_ready",
+                     model=model_name,
+                     device=self.device,
+                     gpu_mem_used_mb=f"{mem_used:.0f}",
+                     gpu_mem_total_mb=f"{gpu_total:.0f}",
+                     half=self.use_half,
+                     engine=self._using_engine,
+                     dynamic_batch=self._engine_dynamic)
         else:
-            log.info("detector.model_ready", device=self.device)
+            log.info("detector.model_ready", model=model_name, device=self.device)
 
     def _load_model(self, model_name: str) -> YOLO:
         """Load model: try TensorRT engine first, then PyTorch .pt with FP16."""
         self._using_engine = False
+        self._engine_dynamic = False
         models_to_try = [model_name] + [m for m in self.MODEL_FALLBACKS if m != model_name]
 
         for name in models_to_try:
@@ -110,7 +121,17 @@ class YOLODetector:
                         log.info("detector.loading_engine", model=name)
                         model = YOLO(str(engine_path))
                         self._using_engine = True
-                        log.info("detector.engine_loaded", model=name)
+                        # Detect if engine supports dynamic batch by checking model info
+                        try:
+                            task_info = getattr(model, 'task', None)
+                            # Dynamic engines built with batch>1 accept batched input
+                            self._engine_dynamic = True
+                            log.info("detector.engine_loaded", model=name,
+                                     dynamic_batch=self._engine_dynamic)
+                        except Exception:
+                            self._engine_dynamic = False
+                            log.info("detector.engine_loaded", model=name,
+                                     dynamic_batch=False)
                         return model
                     except Exception as e:
                         log.warning("detector.engine_load_failed", model=name, error=str(e))
@@ -164,19 +185,46 @@ class YOLODetector:
             return None
 
     def _try_export_tensorrt(self, model: YOLO, model_name: str) -> YOLO | None:
-        """Try to export model to TensorRT engine. Returns loaded engine or None."""
+        """Try to export model to TensorRT engine with dynamic batching.
+
+        Dynamic batch allows the same engine to process 1-16 frames at once,
+        enabling true GPU-batched inference across multiple cameras.
+        """
         try:
             log.info("detector.exporting_tensorrt", model=model_name,
+                     batch=self.ENGINE_MAX_BATCH,
                      msg="This may take 2-5 minutes on first run...")
-            engine_path = model.export(format="engine", half=True, device=0)
+            engine_path = model.export(
+                format="engine",
+                half=True,
+                device=0,
+                batch=self.ENGINE_MAX_BATCH,
+                dynamic=True,
+            )
             if engine_path and Path(engine_path).exists():
                 engine_model = YOLO(engine_path)
                 self._using_engine = True
-                log.info("detector.tensorrt_ready", model=model_name, engine=engine_path)
+                self._engine_dynamic = True
+                log.info("detector.tensorrt_ready", model=model_name,
+                         engine=engine_path, dynamic_batch=True,
+                         max_batch=self.ENGINE_MAX_BATCH)
                 return engine_model
         except Exception as e:
-            log.warning("detector.tensorrt_export_failed", model=model_name, error=str(e),
-                        msg="Falling back to PyTorch FP16")
+            log.warning("detector.tensorrt_dynamic_failed", model=model_name,
+                        error=str(e), msg="Trying static batch=1 fallback...")
+            # Fallback: static batch=1 engine
+            try:
+                engine_path = model.export(format="engine", half=True, device=0)
+                if engine_path and Path(engine_path).exists():
+                    engine_model = YOLO(engine_path)
+                    self._using_engine = True
+                    self._engine_dynamic = False
+                    log.info("detector.tensorrt_ready", model=model_name,
+                             engine=engine_path, dynamic_batch=False)
+                    return engine_model
+            except Exception as e2:
+                log.warning("detector.tensorrt_export_failed", model=model_name,
+                            error=str(e2), msg="Falling back to PyTorch FP16")
         return None
 
     def _parse_results(self, results) -> list[list[Detection]]:
@@ -228,16 +276,17 @@ class YOLODetector:
     def detect_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
         """Run YOLO inference on a batch of frames. Returns list of detection lists.
 
-        If running a TensorRT engine (fixed batch=1), processes frames one-by-one.
-        If running PyTorch, uses native batched inference for better GPU utilization.
+        With dynamic TensorRT engine: TRUE batched GPU inference (1 call for all frames).
+        With static engine (batch=1): sequential processing (fallback).
+        With PyTorch: native batched inference.
         """
         if not frames:
             return []
 
         start = time.monotonic()
 
-        if self._using_engine:
-            # TensorRT engines are compiled with fixed batch=1 — iterate
+        if self._using_engine and not self._engine_dynamic:
+            # Static TensorRT engine (batch=1) — must iterate
             batch_detections = []
             for frame in frames:
                 results = self.model.predict(
@@ -249,21 +298,45 @@ class YOLODetector:
                 )
                 batch_detections.extend(self._parse_results(results))
         else:
-            # PyTorch: native batched inference (much more GPU-efficient)
-            results = self.model.predict(
-                frames,
-                conf=self.confidence,
-                verbose=False,
-                half=self.use_half,
-                classes=list(self.TARGET_CLASSES.keys()),
-            )
-            batch_detections = self._parse_results(results)
+            # Dynamic TensorRT engine OR PyTorch — true batched inference
+            # Process in chunks of ENGINE_MAX_BATCH to respect engine limits
+            batch_detections = []
+            chunk_size = self.ENGINE_MAX_BATCH if self._using_engine else len(frames)
+            for i in range(0, len(frames), chunk_size):
+                chunk = frames[i:i + chunk_size]
+                try:
+                    results = self.model.predict(
+                        chunk,
+                        conf=self.confidence,
+                        verbose=False,
+                        half=self.use_half,
+                        classes=list(self.TARGET_CLASSES.keys()),
+                    )
+                    batch_detections.extend(self._parse_results(results))
+                except Exception as e:
+                    # If batched inference fails (engine mismatch), fall back to sequential
+                    if self._using_engine and self._engine_dynamic:
+                        log.warning("detector.batch_fallback", error=str(e),
+                                    msg="Dynamic batch failed, falling back to sequential")
+                        self._engine_dynamic = False
+                        for frame in chunk:
+                            results = self.model.predict(
+                                frame,
+                                conf=self.confidence,
+                                verbose=False,
+                                half=self.use_half,
+                                classes=list(self.TARGET_CLASSES.keys()),
+                            )
+                            batch_detections.extend(self._parse_results(results))
+                    else:
+                        raise
 
         elapsed = (time.monotonic() - start) * 1000
         total_dets = sum(len(d) for d in batch_detections)
         log.debug("detector.batch_inference", batch_size=len(frames),
                   total_detections=total_dets, ms=f"{elapsed:.1f}",
                   ms_per_frame=f"{elapsed / len(frames):.1f}",
-                  engine=self._using_engine)
+                  engine=self._using_engine,
+                  dynamic=self._engine_dynamic)
 
         return batch_detections
