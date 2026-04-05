@@ -256,9 +256,11 @@ class BestShotSelector:
 
             has_left = buf.tracker_id not in current_tracker_ids
             timed_out = (now - buf.first_seen) >= self.max_hold_time
-            high_conf = buf.best and buf.best.score > 800
+            # Publish quickly: after 2+ frames with good confidence, don't wait
+            quick_publish = buf.frame_count >= 2 and buf.best and buf.best.confidence >= 0.50
+            high_conf = buf.best and buf.best.score > 500
 
-            if (has_left or timed_out or high_conf) and buf.best is not None:
+            if (has_left or timed_out or quick_publish or high_conf) and buf.best is not None:
                 if buf.best.confidence >= self.confidence_threshold:
                     # Attach full frame for snapshot: use current_frame (or the crop as fallback)
                     if current_frame is not None:
@@ -280,7 +282,7 @@ class BestShotSelector:
                         score=f"{buf.best.score:.0f}",
                         frames=buf.frame_count,
                         elapsed=f"{now - buf.first_seen:.1f}s",
-                        reason="left" if has_left else "high_conf" if high_conf else "timeout",
+                        reason="left" if has_left else "quick" if quick_publish else "high_conf" if high_conf else "timeout",
                         plate=buf.best.metadata.get("license_plate"),
                     )
 

@@ -264,11 +264,11 @@ class DetectorService:
 
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
-            min_bbox_area=2000,      # ~45x45px — sub-streams are 640x360
-            min_person_height=40,    # ~11% of 360px frame height
-            max_hold_time=8.0,
-            gone_frames=15,
-            confidence_threshold=0.45,
+            min_bbox_area=1500,      # ~39x39px — sub-streams are 640x360
+            min_person_height=30,    # ~8% of 360px frame height
+            max_hold_time=3.0,       # Publish after 3s max (was 8 — too slow for fast objects)
+            gone_frames=5,           # Publish 5 frames after object leaves (was 15 = 1s delay)
+            confidence_threshold=0.42,
         )
         ring_buffer = RingBuffer(
             max_seconds=self.ring_buffer_seconds,
