@@ -74,31 +74,51 @@ def create_clip(
     if len(all_frames) < 3:
         return None
 
+    tmp_raw = None
+    tmp_h264 = None
     try:
         h, w = all_frames[0].shape[:2]
 
-        # Write to temp file (cv2.VideoWriter needs a file path)
+        # Step 1: Write raw frames with cv2 (mp4v codec)
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-            tmp_path = tmp.name
+            tmp_raw = tmp.name
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(tmp_path, fourcc, fps, (w, h))
+        writer = cv2.VideoWriter(tmp_raw, fourcc, fps, (w, h))
 
         if not writer.isOpened():
             log.warning("ring_buffer.writer_failed", msg="Could not open VideoWriter")
             return None
 
         for frame in all_frames:
-            # Ensure frame matches expected size
             if frame.shape[:2] != (h, w):
                 frame = cv2.resize(frame, (w, h))
             writer.write(frame)
 
         writer.release()
 
-        # Read the file back as bytes
-        clip_bytes = Path(tmp_path).read_bytes()
-        os.unlink(tmp_path)
+        # Step 2: Re-encode to H.264 with ffmpeg (browser-compatible)
+        import subprocess
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+            tmp_h264 = tmp.name
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", tmp_raw,
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                tmp_h264,
+            ],
+            capture_output=True, timeout=30,
+        )
+
+        if result.returncode == 0 and Path(tmp_h264).exists():
+            clip_bytes = Path(tmp_h264).read_bytes()
+        else:
+            # Fallback: use raw mp4v (may not play in browser)
+            log.warning("ring_buffer.ffmpeg_failed", stderr=result.stderr[-200:] if result.stderr else "")
+            clip_bytes = Path(tmp_raw).read_bytes()
 
         if len(clip_bytes) < 100:
             return None
@@ -109,12 +129,14 @@ def create_clip(
 
     except Exception as e:
         log.warning("ring_buffer.clip_error", error=str(e))
-        # Clean up temp file on error
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
         return None
+    finally:
+        for p in [tmp_raw, tmp_h264]:
+            if p:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
 
 
 async def save_clip_to_minio(
