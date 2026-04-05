@@ -10,10 +10,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import shutil
 import numpy as np
 import structlog
 import torch
 from ultralytics import YOLO
+
+# Persistent model directory (Docker volume mounted)
+MODELS_DIR = Path("/app/models")
+MODELS_DIR.mkdir(exist_ok=True)
 
 log = structlog.get_logger()
 
@@ -113,28 +118,20 @@ class YOLODetector:
         models_to_try = [model_name] + [m for m in self.MODEL_FALLBACKS if m != model_name]
 
         for name in models_to_try:
-            # 1. Try pre-built TensorRT engine
+            # 1. Try pre-built TensorRT engine (check persistent volume first, then local)
             if self.device == "cuda":
-                engine_path = Path(f"{name}.engine")
-                if engine_path.exists():
-                    try:
-                        log.info("detector.loading_engine", model=name)
-                        model = YOLO(str(engine_path))
-                        self._using_engine = True
-                        # Detect if engine supports dynamic batch by checking model info
+                for engine_path in [MODELS_DIR / f"{name}.engine", Path(f"{name}.engine")]:
+                    if engine_path.exists():
                         try:
-                            task_info = getattr(model, 'task', None)
-                            # Dynamic engines built with batch>1 accept batched input
+                            log.info("detector.loading_engine", model=name, path=str(engine_path))
+                            model = YOLO(str(engine_path))
+                            self._using_engine = True
                             self._engine_dynamic = True
                             log.info("detector.engine_loaded", model=name,
-                                     dynamic_batch=self._engine_dynamic)
-                        except Exception:
-                            self._engine_dynamic = False
-                            log.info("detector.engine_loaded", model=name,
-                                     dynamic_batch=False)
-                        return model
-                    except Exception as e:
-                        log.warning("detector.engine_load_failed", model=name, error=str(e))
+                                     path=str(engine_path), dynamic_batch=True)
+                            return model
+                        except Exception as e:
+                            log.warning("detector.engine_load_failed", model=name, error=str(e))
 
             # 2. Try loading .pt and exporting to TensorRT
             pt_model = self._load_pt_safe(name)
@@ -202,6 +199,13 @@ class YOLODetector:
                 dynamic=True,
             )
             if engine_path and Path(engine_path).exists():
+                # Copy engine to persistent volume so it survives container restarts
+                persistent_path = MODELS_DIR / f"{model_name}.engine"
+                try:
+                    shutil.copy2(engine_path, persistent_path)
+                    log.info("detector.engine_persisted", path=str(persistent_path))
+                except Exception as e:
+                    log.warning("detector.engine_persist_failed", error=str(e))
                 engine_model = YOLO(engine_path)
                 self._using_engine = True
                 self._engine_dynamic = True
@@ -216,6 +220,11 @@ class YOLODetector:
             try:
                 engine_path = model.export(format="engine", half=True, device=0)
                 if engine_path and Path(engine_path).exists():
+                    persistent_path = MODELS_DIR / f"{model_name}.engine"
+                    try:
+                        shutil.copy2(engine_path, persistent_path)
+                    except Exception:
+                        pass
                     engine_model = YOLO(engine_path)
                     self._using_engine = True
                     self._engine_dynamic = False

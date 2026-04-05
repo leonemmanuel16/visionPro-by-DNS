@@ -73,6 +73,8 @@ services:
       - USE_GPU_DECODE=${USE_GPU_DECODE:-true}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+    volumes:
+      - detector-models:/app/models
     depends_on:
       - go2rtc
       - redis
@@ -169,3 +171,6 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
+
+volumes:
+  detector-models:
