@@ -51,22 +51,22 @@ class EventPublisher:
 
     # Debounce per category
     DEBOUNCE_PERSON = 10.0
-    DEBOUNCE_VEHICLE = 120.0   # 2 minutes — per tracker_id (each new car gets new tracker)
+    DEBOUNCE_VEHICLE = 7200.0  # 2 hours — one alert per car per tracker session
     DEBOUNCE_ANIMAL = 60.0
     DEBOUNCE_DEFAULT = 60.0
 
     # Labels considered vehicles
     VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
 
-    # Spatial dedup: if a new vehicle bbox overlaps >50% with a known parked
-    # vehicle, suppress the event.
-    VEHICLE_IOU_THRESHOLD = 0.50
+    # Spatial dedup: if a new vehicle bbox overlaps >40% with a known parked
+    # vehicle, suppress the event (covers tracker_id changes for same car).
+    VEHICLE_IOU_THRESHOLD = 0.40
 
-    # Stationary check: center must move >3% of frame to be "in motion"
-    MOTION_THRESHOLD_PCT = 3.0
+    # Stationary check: center must move >5% of frame to be "in motion"
+    MOTION_THRESHOLD_PCT = 5.0
 
     # How long parked-vehicle memory persists (seconds)
-    PARKED_MEMORY_TTL = 3600  # 1 hour
+    PARKED_MEMORY_TTL = 7200  # 2 hours — same as debounce
 
     def __init__(
         self,
@@ -231,28 +231,34 @@ class EventPublisher:
         is_vehicle = base_label in self.VEHICLE_LABELS
 
         # ── VEHICLE LOGIC ──────────────────────────────────────────────
+        # Goal: ONE alert when a car arrives. No more alerts while parked.
+        # Re-alert ONLY when the car physically moves to a new position.
         if is_vehicle:
             moving = False
             if tid is not None and frame is not None:
                 moving = self._is_moving(camera_id, tid, detection.bbox, frame.shape)
 
             if not moving:
-                # Stationary vehicle — check if we already published one at this location
+                # Stationary vehicle — check if we already know about a car here
                 if self._is_duplicate_vehicle(camera_id, detection.bbox):
-                    return None  # Already known parked vehicle → suppress completely
+                    return None  # Same spot as a known parked car → suppress
 
-                # First time seeing a vehicle parked here
-                if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
+                # Per-tracker debounce (covers same tracker staying put)
+                if self._should_debounce(camera_id, detection.label, tid):
                     return None
 
-                # Publish once, then remember this spot
+                # First time at this spot → publish once, then remember location
                 self._remember_parked_vehicle(camera_id, detection.bbox)
+                log.debug("vehicle.first_seen_parked", camera=camera_name,
+                          tracker=tid, label=base_label)
             else:
-                # Vehicle is moving — apply normal debounce (24h per tracker, so effectively once)
-                if not detection.is_new and self._should_debounce(camera_id, detection.label, tid):
+                # Vehicle is actively moving — per-tracker debounce still applies
+                if self._should_debounce(camera_id, detection.label, tid):
                     return None
-                # It moved away from a parked spot — forget that spot
+                # It moved away from its parked spot → forget that spot
                 self._forget_vehicle_at(camera_id, detection.bbox)
+                log.debug("vehicle.moved", camera=camera_name,
+                          tracker=tid, label=base_label)
 
         # ── NON-VEHICLE LOGIC ──────────────────────────────────────────
         else:
