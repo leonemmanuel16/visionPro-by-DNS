@@ -187,15 +187,12 @@ class DetectorService:
 
                 if self.go2rtc_url:
                     rtsp_base = self.go2rtc_url.replace("http://", "rtsp://").replace(":1984", ":8554")
-                    if is_fisheye:
-                        stream_url = f"{rtsp_base}/cam_{cam_id_short}_sub"
-                    else:
-                        stream_url = f"{rtsp_base}/cam_{cam_id_short}"
+                    # Always use sub-stream for detection (640x480 or 720p)
+                    # YOLO resizes to 640x640 anyway — full 4MP wastes CPU on resize
+                    stream_url = f"{rtsp_base}/cam_{cam_id_short}_sub"
                 else:
-                    if is_fisheye:
-                        stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
-                    else:
-                        stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
+                    # Prefer sub-stream for detection, fall back to main
+                    stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
                 if stream_url:
                     # Load per-camera detect_classes from config
                     cam_config = cam.get("config") or {}
