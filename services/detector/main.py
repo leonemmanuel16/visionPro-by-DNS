@@ -264,11 +264,11 @@ class DetectorService:
 
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
-            min_bbox_area=12000,
-            min_person_height=120,
+            min_bbox_area=2000,      # ~45x45px — sub-streams are 640x360
+            min_person_height=40,    # ~11% of 360px frame height
             max_hold_time=8.0,
             gone_frames=15,
-            confidence_threshold=0.5,
+            confidence_threshold=0.45,
         )
         ring_buffer = RingBuffer(
             max_seconds=self.ring_buffer_seconds,

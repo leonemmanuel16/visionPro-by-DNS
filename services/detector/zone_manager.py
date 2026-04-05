@@ -1,5 +1,6 @@
 """Zone Manager - Virtual zone/perimeter filtering."""
 
+import json
 from typing import Any
 
 import asyncpg
@@ -29,7 +30,16 @@ class ZoneManager:
                    FROM zones WHERE camera_id = $1 AND is_enabled = true""",
                 camera_id,
             )
-            zones = [dict(row) for row in rows]
+            zones = []
+            for row in rows:
+                zone = dict(row)
+                # Handle points stored as JSON string instead of parsed JSONB
+                if isinstance(zone.get("points"), str):
+                    try:
+                        zone["points"] = json.loads(zone["points"])
+                    except Exception:
+                        zone["points"] = []
+                zones.append(zone)
             self._zone_cache[camera_id] = zones
             return zones
 
