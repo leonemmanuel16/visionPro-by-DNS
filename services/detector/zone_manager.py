@@ -58,6 +58,8 @@ class ZoneManager:
         """Filter detections based on zone configuration.
 
         If no zones defined, all detections pass through.
+        If zones exist but none match a detection's class, that detection passes through
+        (zones only restrict classes they explicitly cover).
         Zone points are normalized (0-1), so we normalize detection coords too.
 
         Args:
@@ -68,19 +70,33 @@ class ZoneManager:
         if not zones:
             return detections
 
+        # Build set of classes that have at least one zone configured
+        classes_with_zones: set[str] = set()
+        for zone in zones:
+            if not zone.get("is_enabled", True):
+                continue
+            for cls in (zone.get("detect_classes") or []):
+                classes_with_zones.add(cls)
+
         filtered = []
         for det in detections:
+            base_label = det.label.split(":")[0]
+            mapped_label = self.YOLO_TO_CLASS.get(base_label, base_label)
+
+            # If no zone covers this detection's class, let it pass through unfiltered
+            if base_label not in classes_with_zones and mapped_label not in classes_with_zones:
+                filtered.append(det)
+                continue
+
+            # This class HAS zones — detection must be inside one of them
+            matched = False
             for zone in zones:
                 if not zone.get("is_enabled", True):
                     continue
 
                 # Check if detection class is in zone's detect_classes
-                # Zone detect_classes uses mapped names: "person", "vehicle", "animal"
-                # det.label has YOLO names: "car", "truck", etc.
                 detect_classes = zone.get("detect_classes", ["person", "vehicle"])
                 if detect_classes:
-                    base_label = det.label.split(":")[0]
-                    mapped_label = self.YOLO_TO_CLASS.get(base_label, base_label)
                     if base_label not in detect_classes and mapped_label not in detect_classes:
                         continue
 
@@ -93,6 +109,7 @@ class ZoneManager:
                         det.metadata["zone_id"] = str(zone["id"])
                         det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
+                        matched = True
                         break
                 elif zone_type == "tripwire":
                     if self._near_tripwire(det, zone, frame_shape):
@@ -101,6 +118,7 @@ class ZoneManager:
                         det.metadata["zone_id"] = str(zone["id"])
                         det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
+                        matched = True
                         break
                 elif zone_type == "perimeter":
                     if self._point_in_polygon(det, zone, frame_shape):
@@ -109,6 +127,7 @@ class ZoneManager:
                         det.metadata["zone_id"] = str(zone["id"])
                         det.metadata["zone_name"] = zone["name"]
                         filtered.append(det)
+                        matched = True
                         break
 
         return filtered

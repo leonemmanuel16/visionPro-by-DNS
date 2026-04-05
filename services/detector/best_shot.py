@@ -83,10 +83,10 @@ class BestShotSelector:
         # Already-published: camera:tracker_id → True
         self._published: set[str] = set()
 
-        # Spatial memory: camera → list of (bbox_center, timestamp)
-        self._spatial_memory: dict[str, list[tuple[tuple[float, float], float]]] = {}
-        self.SPATIAL_RADIUS_PCT = 5.0
-        self.SPATIAL_MEMORY_TTL = 300
+        # Spatial memory: camera → list of (bbox_center, label, timestamp)
+        self._spatial_memory: dict[str, list[tuple[tuple[float, float], str, float]]] = {}
+        self.SPATIAL_RADIUS_PCT = 3.0   # 3% of frame — tighter to avoid suppressing nearby objects
+        self.SPATIAL_MEMORY_TTL = 120   # 2 minutes — was 5 min, too aggressive for active scenes
 
         self._frame_counter: dict[str, int] = {}
         self._last_cleanup = time.monotonic()
@@ -114,28 +114,37 @@ class BestShotSelector:
         cy2 = min(h, y2 + pad_y)
         return frame[cy1:cy2, cx1:cx2].copy(), (cx1, cy1)
 
-    def _is_near_published(self, camera_id: str, center: tuple[float, float], frame_shape: tuple) -> bool:
-        """Check if this position was recently published (spatial dedup)."""
+    def _is_near_published(self, camera_id: str, center: tuple[float, float],
+                           frame_shape: tuple, label: str = "") -> bool:
+        """Check if this position was recently published for the same class (spatial dedup).
+
+        Only suppresses if the SAME class was published nearby. A person and a car
+        at the same position should both generate events.
+        """
         now = time.monotonic()
         memory = self._spatial_memory.get(camera_id, [])
-        memory = [(c, t) for c, t in memory if now - t < self.SPATIAL_MEMORY_TTL]
+        memory = [(c, l, t) for c, l, t in memory if now - t < self.SPATIAL_MEMORY_TTL]
         self._spatial_memory[camera_id] = memory
 
+        base_label = label.split(":")[0]
         h, w = frame_shape[:2]
         threshold = self.SPATIAL_RADIUS_PCT / 100
 
-        for prev_center, _ in memory:
+        for prev_center, prev_label, _ in memory:
+            # Only suppress same class at same position
+            if prev_label.split(":")[0] != base_label:
+                continue
             dx = abs(center[0] - prev_center[0]) / w
             dy = abs(center[1] - prev_center[1]) / h
             if dx < threshold and dy < threshold:
                 return True
         return False
 
-    def _remember_position(self, camera_id: str, center: tuple[float, float]):
+    def _remember_position(self, camera_id: str, center: tuple[float, float], label: str = ""):
         """Remember that we published an event at this position."""
         if camera_id not in self._spatial_memory:
             self._spatial_memory[camera_id] = []
-        self._spatial_memory[camera_id].append((center, time.monotonic()))
+        self._spatial_memory[camera_id].append((center, label, time.monotonic()))
 
     def _compute_score(self, confidence: float, bbox_area: float, metadata: dict) -> float:
         """Score a frame. Higher = better candidate for the ONE alert."""
@@ -175,7 +184,7 @@ class BestShotSelector:
 
         center = self._bbox_center(bbox)
         if key not in self._buffers:
-            if self._is_near_published(camera_id, center, frame.shape):
+            if self._is_near_published(camera_id, center, frame.shape, label):
                 self._published.add(key)
                 return
 
@@ -261,7 +270,7 @@ class BestShotSelector:
                     ready.append((buf, buf.best))
 
                     center = self._bbox_center(buf.best.bbox)
-                    self._remember_position(camera_id, center)
+                    self._remember_position(camera_id, center, buf.label)
                     self._published.add(key)
 
                     log.info(
@@ -298,6 +307,6 @@ class BestShotSelector:
 
         for cam_id in list(self._spatial_memory.keys()):
             self._spatial_memory[cam_id] = [
-                (c, t) for c, t in self._spatial_memory[cam_id]
-                if now - t < self.SPATIAL_MEMORY_TTL
+                entry for entry in self._spatial_memory[cam_id]
+                if now - entry[-1] < self.SPATIAL_MEMORY_TTL
             ]

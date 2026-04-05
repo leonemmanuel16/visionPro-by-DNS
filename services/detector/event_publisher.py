@@ -51,7 +51,7 @@ class EventPublisher:
 
     # Debounce per category
     DEBOUNCE_PERSON = 10.0
-    DEBOUNCE_VEHICLE = 86400.0   # 24 hours — effectively "once per tracker session"
+    DEBOUNCE_VEHICLE = 120.0   # 2 minutes — per tracker_id (each new car gets new tracker)
     DEBOUNCE_ANIMAL = 60.0
     DEBOUNCE_DEFAULT = 60.0
 

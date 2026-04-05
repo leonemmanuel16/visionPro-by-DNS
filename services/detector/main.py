@@ -370,6 +370,13 @@ class DetectorService:
                 # Filter by zones
                 filtered = zone_manager.filter_detections(tracked, zones, frame_shape=frame.shape)
 
+                if tracked and not filtered and frame_count % 50 == 0:
+                    labels = [d.label for d in tracked[:5]]
+                    log.warning("pipeline.zone_filter_drop_all",
+                                camera=camera_name,
+                                tracked=len(tracked), filtered=0,
+                                zones=len(zones), labels=labels)
+
                 # Attribute extraction + face recognition
                 frame_count += 1
 
