@@ -105,7 +105,7 @@ export function FaceTagModal({
 
       await api.post(endpoint, {
         person_id: targetPersonId,
-        bbox: faceBbox || null,
+        ...(faceBbox ? { x1: faceBbox.x1, y1: faceBbox.y1, x2: faceBbox.x2, y2: faceBbox.y2 } : {}),
       });
 
       onSave(targetPersonId, isNew);

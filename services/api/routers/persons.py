@@ -110,10 +110,10 @@ def _detect_all_faces_insightface(face_app, image: np.ndarray):
 # --- Schemas ---
 
 class TagFaceRequest(BaseModel):
-    x1: int
-    y1: int
-    x2: int
-    y2: int
+    x1: int | None = None
+    y1: int | None = None
+    x2: int | None = None
+    y2: int | None = None
     person_id: str | None = None  # Existing person
     new_person_name: str | None = None  # Create new person
     new_person_role: str | None = None
@@ -1010,16 +1010,18 @@ async def tag_face_in_event(
     if img is None:
         raise HTTPException(status_code=400, detail="Could not decode snapshot image")
 
-    # Crop the selected face region
+    # Crop the selected face region (or use full image if no bbox)
     h, w = img.shape[:2]
-    x1 = max(0, min(data.x1, w))
-    y1 = max(0, min(data.y1, h))
-    x2 = max(0, min(data.x2, w))
-    y2 = max(0, min(data.y2, h))
-    if x2 <= x1 or y2 <= y1:
-        raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
-
-    face_crop = img[y1:y2, x1:x2]
+    if data.x1 is not None and data.y1 is not None and data.x2 is not None and data.y2 is not None:
+        x1 = max(0, min(data.x1, w))
+        y1 = max(0, min(data.y1, h))
+        x2 = max(0, min(data.x2, w))
+        y2 = max(0, min(data.y2, h))
+        if x2 <= x1 or y2 <= y1:
+            raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
+        face_crop = img[y1:y2, x1:x2]
+    else:
+        face_crop = img
 
     # Run InsightFace on the crop to get embedding
     face_app = await _get_face_app()
@@ -1165,16 +1167,18 @@ async def tag_face_in_unknown(
     if img is None:
         raise HTTPException(400, "Could not decode snapshot image")
 
-    # Crop the selected face region
+    # Crop the selected face region (or use full image if no bbox)
     h, w = img.shape[:2]
-    x1 = max(0, min(data.x1, w))
-    y1 = max(0, min(data.y1, h))
-    x2 = max(0, min(data.x2, w))
-    y2 = max(0, min(data.y2, h))
-    if x2 <= x1 or y2 <= y1:
-        raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
-
-    face_crop = img[y1:y2, x1:x2]
+    if data.x1 is not None and data.y1 is not None and data.x2 is not None and data.y2 is not None:
+        x1 = max(0, min(data.x1, w))
+        y1 = max(0, min(data.y1, h))
+        x2 = max(0, min(data.x2, w))
+        y2 = max(0, min(data.y2, h))
+        if x2 <= x1 or y2 <= y1:
+            raise HTTPException(status_code=400, detail="Invalid bounding box coordinates")
+        face_crop = img[y1:y2, x1:x2]
+    else:
+        face_crop = img
 
     # Run InsightFace on the crop to get embedding
     face_app = await _get_face_app()
