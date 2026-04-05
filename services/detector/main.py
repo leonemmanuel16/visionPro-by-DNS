@@ -276,20 +276,37 @@ class DetectorService:
         frame_count = 0
         face_every_n = 3
         enable_check_interval = self.detection_fps * 10
+        # Reload config & zones every ~30 seconds
+        config_reload_interval = self.detection_fps * 30
 
         while self.running:
             try:
-                # Periodically verify camera is still enabled in DB
+                # Periodically verify camera is still enabled + reload config & zones
                 if frame_count > 0 and frame_count % enable_check_interval == 0:
                     try:
                         async with self.db_pool.acquire() as conn:
-                            still_enabled = await conn.fetchval(
-                                "SELECT is_enabled FROM cameras WHERE id = $1",
+                            cam_row = await conn.fetchrow(
+                                "SELECT is_enabled, config FROM cameras WHERE id = $1",
                                 _uuid.UUID(camera_id)
                             )
-                        if not still_enabled:
+                        if not cam_row or not cam_row["is_enabled"]:
                             log.info("detector.camera_disabled", camera_id=camera_id, name=camera_name)
                             break
+                        # Reload detect_classes from DB config
+                        if frame_count % config_reload_interval == 0:
+                            new_config = cam_row.get("config") or {}
+                            if isinstance(new_config, str):
+                                try:
+                                    new_config = json.loads(new_config)
+                                except Exception:
+                                    new_config = {}
+                            new_classes = new_config.get("detect_classes", None)
+                            if new_classes != detect_classes:
+                                log.info("detector.config_reloaded", camera=camera_name,
+                                         old=detect_classes, new=new_classes)
+                                detect_classes = new_classes
+                            # Reload zones
+                            zones = await zone_manager.refresh_zones(camera_id)
                     except Exception:
                         pass
 

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow, format } from "date-fns";
+import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
 import { getApiUrl } from "@/lib/urls";
 
@@ -131,7 +132,9 @@ export function EventCard({
             )}
           </div>
           <p className="text-xs text-gray-400">
-            {formatDistanceToNow(new Date(occurred_at), { addSuffix: true })}
+            {format(new Date(occurred_at), "dd/MM/yyyy HH:mm:ss", { locale: es })}
+            {" · "}
+            {formatDistanceToNow(new Date(occurred_at), { addSuffix: true, locale: es })}
           </p>
         </div>
       </div>
