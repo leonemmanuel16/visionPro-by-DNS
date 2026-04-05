@@ -287,6 +287,10 @@ class DetectorService:
         enable_check_interval = self.detection_fps * 10
         # Reload config & zones every ~30 seconds
         config_reload_interval = self.detection_fps * 30
+        # Person count publish interval (~every 30 seconds)
+        person_count_interval = self.detection_fps * 30
+        # Line crossing state: tracker_id → last_side ("A" or "B") for each tripwire zone
+        line_crossing_state: dict[str, dict[int, str]] = {}
 
         while self.running:
             try:
@@ -343,13 +347,15 @@ class DetectorService:
                 pre_filter_count = len(detections)
                 if detect_classes:
                     allowed = set(detect_classes)
-                    # Feature flags like face_recognition/face_unknown imply "person" detection
-                    FACE_FLAGS = {"face_recognition", "face_unknown"}
-                    if allowed & FACE_FLAGS:
+                    # Feature flags that imply "person" detection
+                    PERSON_FLAGS = {"face_recognition", "face_unknown", "person_count", "loitering", "line_crossing"}
+                    if allowed & PERSON_FLAGS:
                         allowed.add("person")
-                    # "abandoned_object" needs person/vehicle detection to work
+                    # "abandoned_object" and "intrusion" need person/vehicle detection
                     if "abandoned_object" in allowed:
                         allowed.update({"person", "vehicle"})
+                    if "intrusion" in allowed:
+                        allowed.update({"person", "vehicle", "animal"})
                     detections = [
                         d for d in detections
                         if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
@@ -441,6 +447,67 @@ class DetectorService:
                     except Exception as e:
                         log.debug("face_recognition.error", error=str(e))
 
+                # ── PERSON COUNT: Publish periodic count of persons in frame ──
+                if (detect_classes and "person_count" in detect_classes
+                        and frame_count % person_count_interval == 0):
+                    person_dets_count = [d for d in filtered if d.label.split(":")[0] == "person"]
+                    if person_dets_count:
+                        details = []
+                        for pd in person_dets_count:
+                            detail = {
+                                "tracker_id": pd.tracker_id,
+                                "bbox": list(pd.bbox),
+                                "confidence": round(pd.confidence, 2),
+                            }
+                            if pd.metadata and pd.metadata.get("person_name"):
+                                detail["person_name"] = pd.metadata["person_name"]
+                            details.append(detail)
+                        try:
+                            await publisher.publish_person_count(
+                                camera_id, camera_name,
+                                len(person_dets_count), details, frame,
+                            )
+                        except Exception as e:
+                            log.debug("person_count.error", error=str(e))
+
+                # ── LINE CROSSING: Detect when objects cross a tripwire zone ──
+                if detect_classes and "line_crossing" in detect_classes and zones:
+                    tripwires = [z for z in zones if z.get("zone_type") == "tripwire"]
+                    for tw in tripwires:
+                        tw_id = str(tw.get("id", ""))
+                        if tw_id not in line_crossing_state:
+                            line_crossing_state[tw_id] = {}
+                        points = tw.get("points", [])
+                        if len(points) >= 2:
+                            p1 = points[0]
+                            p2 = points[1]
+                            lx1, ly1 = p1.get("x", 0), p1.get("y", 0)
+                            lx2, ly2 = p2.get("x", 0), p2.get("y", 0)
+                            # Line direction vector (perpendicular determines side)
+                            dx, dy = lx2 - lx1, ly2 - ly1
+                            for det in filtered:
+                                h_f, w_f = frame.shape[:2]
+                                cx = ((det.bbox[0] + det.bbox[2]) / 2) / w_f
+                                cy = ((det.bbox[1] + det.bbox[3]) / 2) / h_f
+                                # Cross product determines which side of the line
+                                cross = (cx - lx1) * dy - (cy - ly1) * dx
+                                side = "A" if cross > 0 else "B"
+                                prev_side = line_crossing_state[tw_id].get(det.tracker_id)
+                                if prev_side and prev_side != side:
+                                    # Crossed the line!
+                                    direction = f"{prev_side}→{side}"
+                                    if det.metadata is None:
+                                        det.metadata = {}
+                                    det.metadata["line_crossing"] = True
+                                    det.metadata["crossing_direction"] = direction
+                                    det.metadata["tripwire_id"] = tw_id
+                                    log.info("line_crossing.detected",
+                                             camera=camera_name,
+                                             tracker_id=det.tracker_id,
+                                             label=det.label,
+                                             direction=direction)
+                                line_crossing_state[tw_id][det.tracker_id] = side
+
                 # Publish real-time tracking positions via Redis pub/sub
                 if filtered:
                     h, w = frame.shape[:2]
@@ -482,12 +549,16 @@ class DetectorService:
                                 track["attributes"] = attrs
                         tracks.append(track)
 
+                    # Count persons for real-time display
+                    person_count_rt = sum(1 for d in filtered if d.label.split(":")[0] == "person")
+
                     import json as _json
                     await self.redis.publish(
                         "tracking",
                         _json.dumps({
                             "camera_id": camera_id,
                             "tracks": tracks,
+                            "person_count": person_count_rt,
                         }),
                     )
 

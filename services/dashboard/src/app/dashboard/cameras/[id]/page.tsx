@@ -36,6 +36,8 @@ import {
   XCircle,
   Plus,
   PenTool,
+  ArrowLeftRight,
+  Users,
 } from "lucide-react";
 
 interface CameraDetail {
@@ -68,10 +70,10 @@ const DETECTION_CAPABILITIES = [
   { id: "vehicle", label: "Vehiculos", icon: Car, color: "text-yellow-600", bg: "bg-yellow-50", border: "border-yellow-500", desc: "Detectar autos, camionetas, camiones, motos" },
   { id: "animal", label: "Animales", icon: Dog, color: "text-purple-600", bg: "bg-purple-50", border: "border-purple-500", desc: "Detectar perros, gatos y otros animales" },
   { id: "intrusion", label: "Intrusion de Zona", icon: ShieldAlert, color: "text-red-600", bg: "bg-red-50", border: "border-red-500", desc: "Alertar cuando alguien entra a zona prohibida" },
+  { id: "line_crossing", label: "Cruce de Linea", icon: ArrowLeftRight, color: "text-pink-600", bg: "bg-pink-50", border: "border-pink-500", desc: "Detectar cuando alguien cruza una linea virtual" },
+  { id: "person_count", label: "Conteo de Personas", icon: Users, color: "text-teal-600", bg: "bg-teal-50", border: "border-teal-500", desc: "Contar personas en una zona definida" },
   { id: "loitering", label: "Merodeo", icon: Footprints, color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-500", desc: "Personas que permanecen mucho tiempo" },
   { id: "abandoned_object", label: "Objeto Abandonado", icon: Package, color: "text-gray-600", bg: "bg-gray-50", border: "border-gray-500", desc: "Objetos dejados sin supervision" },
-  { id: "fire_smoke", label: "Fuego / Humo", icon: Flame, color: "text-red-500", bg: "bg-red-50", border: "border-red-400", desc: "Detectar fuego o humo visible" },
-  { id: "motion", label: "Movimiento General", icon: Eye, color: "text-cyan-600", bg: "bg-cyan-50", border: "border-cyan-500", desc: "Cualquier movimiento en el campo de vision" },
 ];
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -244,6 +246,9 @@ export default function CameraDetailPage() {
         setCamera((p) => p ? { ...p, is_enabled: shouldBeOn } : p);
         api.put(`/cameras/${id}`, { is_enabled: shouldBeOn }).catch(() => {});
       }
+      // Auto-save detect_classes to API immediately (don't wait for "Guardar")
+      localStorage.setItem(`cam_detections_${id}`, JSON.stringify(next));
+      api.put(`/cameras/${id}/settings`, { detections: next }).catch(() => {});
       return next;
     });
     if (!wasEnabled) {
@@ -268,7 +273,8 @@ export default function CameraDetailPage() {
   };
 
   const saveCurrentZone = () => {
-    if (!selectedDetection || drawingPoints.length < 3) return;
+    const minPts = selectedDetection === "line_crossing" ? 2 : 3;
+    if (!selectedDetection || drawingPoints.length < minPts) return;
     const existing = detZones[selectedDetection]?.zones || [];
     if (existing.length >= MAX_ZONES_PER_DET) return;
     const newZone = {
@@ -312,16 +318,19 @@ export default function CameraDetailPage() {
     // Save zones to API
     for (const [detId, data] of Object.entries(detZones)) {
       if (!enabledDetections.includes(detId)) continue;
+      // line_crossing uses tripwire zone type (2 points = line), others use roi (polygon)
+      const zoneType = detId === "line_crossing" ? "tripwire" : "roi";
+      const minPoints = detId === "line_crossing" ? 2 : 3;
       for (const zone of data.zones) {
-        if (zone.points.length < 3) continue;
+        if (zone.points.length < minPoints) continue;
         if (zone.apiId) {
           await api.put(`/zones/${zone.apiId}`, {
-            name: zone.name, zone_type: "roi", points: zone.points,
+            name: zone.name, zone_type: zoneType, points: zone.points,
             detect_classes: [detId], is_enabled: true,
           }).catch(() => {});
         } else {
           const res = await api.post<any>("/zones", {
-            camera_id: id, name: zone.name, zone_type: "roi",
+            camera_id: id, name: zone.name, zone_type: zoneType,
             points: zone.points, detect_classes: [detId], is_enabled: true,
           }).catch(() => null);
           if (res?.id) zone.apiId = res.id;
