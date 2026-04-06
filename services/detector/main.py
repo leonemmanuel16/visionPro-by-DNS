@@ -39,6 +39,7 @@ from vehicle_attributes import extract_vehicle_attributes
 from best_shot import BestShotSelector
 from ring_buffer import RingBuffer, create_clip, save_clip_to_minio
 from event_validator import EventValidator
+from processing_queue import ProcessingQueue, QueueItem
 
 structlog.configure(
     processors=[
@@ -84,6 +85,7 @@ class DetectorService:
         self._zone_manager: ZoneManager | None = None
         self._face_recognizer: FaceRecognizer | None = None
         self._event_validator: EventValidator | None = None
+        self._processing_queue: ProcessingQueue | None = None
 
         # Per-camera state (managed by _sync_cameras)
         self.cam_streams: dict[str, str] = {}       # cam_id -> go2rtc sub-stream name
@@ -160,6 +162,13 @@ class DetectorService:
             secure=False,
         )
         self._face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
+
+        # Initialize processing queue (deep analysis on 4MP frames)
+        self._processing_queue = ProcessingQueue(
+            db_pool=self.db_pool,
+            face_recognizer=self._face_recognizer,
+        )
+        await self._processing_queue.start()
 
         # Load cameras from DB
         await self._sync_cameras()
@@ -684,6 +693,18 @@ class DetectorService:
                     confidence=candidate.confidence,
                 )
 
+            # Enqueue 4MP frame for deep processing (face recog, attributes)
+            if event_id and self._processing_queue and snapshot_frame is not None:
+                await self._processing_queue.enqueue(QueueItem(
+                    event_id=event_id,
+                    camera_id=cam_id,
+                    frame=snapshot_frame,
+                    bbox=snapshot_bbox,
+                    label=buf.label,
+                    tracker_id=buf.tracker_id,
+                    metadata=candidate.metadata or {},
+                ))
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Background Tasks
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -756,6 +777,8 @@ class DetectorService:
 
     async def stop(self):
         self.running = False
+        if self._processing_queue:
+            await self._processing_queue.stop()
         if self._event_validator:
             await self._event_validator.stop()
         if self._grabber:
