@@ -60,7 +60,7 @@ export function SnapshotPlayer({
 
     if (cameraId && usingAiRef.current) {
       // Primary: AI-annotated snapshot from detector
-      url = `${apiUrl}/cameras/${cameraId}/ai-snapshot?t=${Date.now()}`;
+      url = `${apiUrl}/api/v1/cameras/${cameraId}/ai-snapshot?t=${Date.now()}`;
     } else {
       // Fallback: raw go2rtc snapshot
       const stream = activeStreamRef.current || candidates[0];
