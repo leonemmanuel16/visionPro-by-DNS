@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { SnapshotPlayer } from "@/components/SnapshotPlayer";
+import { VideoPlayer } from "@/components/VideoPlayer";
 import { PTZControls } from "@/components/PTZControls";
 import { DetectionOverlay } from "@/components/DetectionOverlay";
 import { ZoneOverlay, ZonePolygon, getZoneColor } from "@/components/ZoneOverlay";
@@ -488,13 +489,11 @@ export default function CameraDetailPage() {
                 <FisheyeDewarper cameraName={streamName} isOnline={camera.is_online} />
               ) : (
                 <>
-                  <SnapshotPlayer
+                  <VideoPlayer
                     cameraName={streamName}
                     isOnline={camera.is_online}
                     className="aspect-video w-full"
-                    intervalMs={67}
-                    width={1280}
-                    useMainStream={true}
+                    preferSubStream={false}
                   />
                   {/* Zone polygons ON the video */}
                   {activeTab === "detections" && (
