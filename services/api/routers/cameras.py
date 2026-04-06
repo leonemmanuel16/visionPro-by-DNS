@@ -7,7 +7,6 @@ from uuid import UUID
 import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -37,34 +36,6 @@ GO2RTC_INTERNAL = "http://host.docker.internal:1984"
 async def _get_redis() -> aioredis.Redis:
     """Get a Redis connection."""
     return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-
-async def _get_redis_binary() -> aioredis.Redis:
-    """Get a binary Redis connection (for JPEG snapshots)."""
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=False)
-
-
-@router.get("/{camera_id}/ai-snapshot")
-async def get_ai_snapshot(camera_id: UUID):
-    """Serve the latest AI-annotated snapshot (JPEG with bounding boxes drawn).
-
-    No auth required — used by <img> tags that can't send JWT headers.
-    Returns the annotated frame from the detector via Redis.
-    """
-    r = await _get_redis_binary()
-    try:
-        jpeg_data = await r.get(f"ai_snapshot:{camera_id}")
-    finally:
-        await r.close()
-
-    if not jpeg_data:
-        raise HTTPException(status_code=404, detail="No snapshot available")
-
-    return Response(
-        content=jpeg_data,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-cache, no-store"},
-    )
 
 
 async def _publish_camera_event(event_type: str, camera_id: str, ip_address: str = "") -> None:

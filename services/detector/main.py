@@ -35,7 +35,6 @@ from vehicle_attributes import extract_vehicle_attributes
 from best_shot import BestShotSelector
 from ring_buffer import RingBuffer, create_clip, save_clip_to_minio
 from event_validator import EventValidator
-from annotate_frame import annotate_frame
 
 structlog.configure(
     processors=[
@@ -88,8 +87,6 @@ class DetectorService:
             self.postgres_url, min_size=2, max_size=10
         )
         self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
-        # Binary Redis for AI snapshots (JPEG bytes, no string decoding)
-        self.redis_binary = aioredis.from_url(self.redis_url, decode_responses=False)
 
         # Test connections
         async with self.db_pool.acquire() as conn:
@@ -562,20 +559,6 @@ class DetectorService:
                         "person_count": person_count_rt,
                     }),
                 )
-
-                # ── AI SNAPSHOT: Draw boxes on frame, save as JPEG in Redis ──
-                # Only once per second (every detection_fps frames) to save CPU
-                if frame_count % self.detection_fps == 0:
-                    try:
-                        ai_jpeg = await loop.run_in_executor(
-                            self.thread_pool,
-                            annotate_frame, frame, tracked, 1280,
-                        )
-                        await self.redis_binary.set(
-                            f"ai_snapshot:{camera_id}", ai_jpeg, ex=2,
-                        )
-                    except Exception as e:
-                        log.debug("ai_snapshot.error", camera=camera_name, error=str(e))
 
                 # ── BEST-SHOT: Feed all detections, publish nothing yet ──
                 best_shot.cleanup()
