@@ -386,7 +386,7 @@ class EventPublisher:
                 annotated, f"Personas: {person_count}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2,
             )
-            _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
             object_name = f"{timestamp_str}/{event_id}_group.jpg"
             self.minio.put_object(
@@ -439,13 +439,45 @@ class EventPublisher:
         try:
             annotated = frame.copy()
             x1, y1, x2, y2 = [int(c) for c in detection.bbox]
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label_text = f"{detection.label} {detection.confidence:.0%}"
+            h_frame, w_frame = annotated.shape[:2]
+
+            # Scale annotations based on frame resolution (thicker for 4MP)
+            thickness = max(2, int(min(w_frame, h_frame) / 500))
+            font_scale = max(0.6, min(w_frame, h_frame) / 1500)
+
+            # Draw person/vehicle bounding box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+
+            # Draw face rectangle and name if detected
+            meta = detection.metadata or {}
+            person_name = meta.get("person_name")
+            face_bbox = meta.get("face_bbox")
+
+            if face_bbox:
+                # face_bbox is (top, right, bottom, left) from InsightFace
+                ft, fr, fb, fl = [int(c) for c in face_bbox]
+                cv2.rectangle(annotated, (fl, ft), (fr, fb), (255, 200, 0), thickness)
+                if person_name:
+                    cv2.putText(
+                        annotated, person_name, (fl, ft - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.2, (255, 200, 0), thickness,
+                    )
+
+            # Label text
+            label_text = person_name or f"{detection.label} {detection.confidence:.0%}"
             cv2.putText(
                 annotated, label_text, (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2,
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness,
             )
-            _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+            # Vehicle attributes text
+            if meta.get("vehicle_color") and meta.get("vehicle_type"):
+                veh_text = f"{meta['vehicle_type']} {meta['vehicle_color']}"
+                cv2.putText(
+                    annotated, veh_text, (x1, y2 + int(25 * font_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.8, (0, 200, 255), thickness,
+                )
+            _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
             object_name = f"{timestamp}/{event_id}.jpg"
             self.minio.put_object(
@@ -467,7 +499,7 @@ class EventPublisher:
             if x2 <= x1 or y2 <= y1:
                 return None
             crop = frame[y1:y2, x1:x2]
-            _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
             object_name = f"{timestamp}/{event_id}_thumb.jpg"
             self.minio.put_object(

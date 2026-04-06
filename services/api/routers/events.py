@@ -104,14 +104,18 @@ async def get_thumbnail(
 async def get_clip(
     event_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
+    """Serve video clip — no auth required (browser <video> tag can't send JWT)."""
     event = await get_event(db, event_id)
     if not event or not event.clip_path:
         raise HTTPException(status_code=404, detail="Clip not found")
     parts = event.clip_path.split("/", 1)
     try:
         data = get_object_data(parts[0], parts[1])
-        return Response(content=data, media_type="video/mp4")
+        return Response(
+            content=data,
+            media_type="video/mp4",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
     except Exception:
         raise HTTPException(status_code=404, detail="Clip file not found in storage")
