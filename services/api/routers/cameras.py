@@ -245,10 +245,12 @@ async def apply_image_settings(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Apply image settings (brightness, contrast, saturation, sharpness) to camera via ISAPI.
+    """Apply image settings to Hikvision camera via ISAPI.
 
-    Hikvision ISAPI endpoint: PUT /ISAPI/Image/channels/1/color
-    Values are 0-100 mapped to camera's 0-100 range.
+    Hikvision uses separate endpoints:
+    - PUT /ISAPI/Image/channels/1/color → brightness, contrast, saturation
+    - PUT /ISAPI/Image/channels/1/Sharpness → sharpness
+    - PUT /ISAPI/Image/channels/1/WDR → wide dynamic range on/off
     """
     camera = await get_camera(db, camera_id)
     if not camera:
@@ -258,51 +260,67 @@ async def apply_image_settings(
     username = camera.username or "admin"
     password = camera.password_encrypted or ""
 
-    brightness = int(data.get("brightness", 50))
-    contrast = int(data.get("contrast", 50))
-    saturation = int(data.get("saturation", 50))
-    sharpness = int(data.get("sharpness", 50))
+    brightness = max(0, min(100, int(data.get("brightness", 50))))
+    contrast = max(0, min(100, int(data.get("contrast", 50))))
+    saturation = max(0, min(100, int(data.get("saturation", 50))))
+    sharpness = max(0, min(100, int(data.get("sharpness", 50))))
+    wdr = data.get("wdr", False)
 
-    # Clamp values 0-100
-    brightness = max(0, min(100, brightness))
-    contrast = max(0, min(100, contrast))
-    saturation = max(0, min(100, saturation))
-    sharpness = max(0, min(100, sharpness))
+    auth = httpx.DigestAuth(username, password)
+    headers = {"Content-Type": "application/xml"}
+    results = {}
 
-    # Hikvision ISAPI XML for image color settings
-    xml_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # 1. Brightness, Contrast, Saturation → /color
+            color_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Color>
 <brightnessLevel>{brightness}</brightnessLevel>
 <contrastLevel>{contrast}</contrastLevel>
 <saturationLevel>{saturation}</saturationLevel>
-<sharpnessLevel>{sharpness}</sharpnessLevel>
 </Color>"""
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.put(
                 f"http://{ip}/ISAPI/Image/channels/1/color",
-                content=xml_body,
-                headers={"Content-Type": "application/xml"},
-                auth=httpx.DigestAuth(username, password),
+                content=color_xml, headers=headers, auth=auth,
             )
-            if resp.status_code == 200:
-                # Also save to DB config
-                current_config = camera.config or {}
-                current_config["image_settings"] = {
-                    "brightness": brightness,
-                    "contrast": contrast,
-                    "saturation": saturation,
-                    "sharpness": sharpness,
-                }
-                await update_camera(db, camera_id, {"config": current_config})
-                return {"status": "ok", "message": "Imagen aplicada"}
-            else:
-                logger.warning(f"ISAPI image failed: {resp.status_code} {resp.text[:200]}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Camara respondio con error {resp.status_code}",
-                )
+            results["color"] = resp.status_code
+
+            # 2. Sharpness → separate endpoint
+            sharp_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Sharpness>
+<sharpnessLevel>{sharpness}</sharpnessLevel>
+</Sharpness>"""
+            resp2 = await client.put(
+                f"http://{ip}/ISAPI/Image/channels/1/Sharpness",
+                content=sharp_xml, headers=headers, auth=auth,
+            )
+            results["sharpness"] = resp2.status_code
+
+            # 3. WDR → separate endpoint
+            wdr_mode = "open" if wdr else "close"
+            wdr_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<WDR>
+<mode>{wdr_mode}</mode>
+<WDRLevel>50</WDRLevel>
+</WDR>"""
+            resp3 = await client.put(
+                f"http://{ip}/ISAPI/Image/channels/1/WDR",
+                content=wdr_xml, headers=headers, auth=auth,
+            )
+            results["wdr"] = resp3.status_code
+
+        # Save to DB
+        current_config = camera.config or {}
+        current_config["image_settings"] = {
+            "brightness": brightness, "contrast": contrast,
+            "saturation": saturation, "sharpness": sharpness,
+            "wdr": wdr,
+        }
+        await update_camera(db, camera_id, {"config": current_config})
+
+        logger.info(f"ISAPI image results: {results}")
+        return {"status": "ok", "results": results, "message": "Imagen aplicada"}
+
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Timeout conectando a la camara")
     except HTTPException:

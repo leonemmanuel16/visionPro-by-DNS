@@ -129,6 +129,7 @@ export default function CameraDetailPage() {
           contrast: settings.contrast,
           saturation: settings.saturation,
           sharpness: settings.sharpness,
+          wdr: settings.wdr,
         });
       } catch (_e) { /* silent — camera may not support ISAPI */ }
     }, 300);
@@ -951,6 +952,23 @@ export default function CameraDetailPage() {
                       className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                   </div>
                 ))}
+                {/* WDR Toggle */}
+                <div className="flex items-center justify-between pt-2 border-t">
+                  <div>
+                    <span className="text-sm text-gray-700 font-medium">WDR (Rango Dinamico Amplio)</span>
+                    <p className="text-xs text-gray-500">Mejora la imagen en condiciones de alto contraste de luz</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const next = { ...imageSettings, wdr: !imageSettings.wdr };
+                      setImageSettings(next);
+                      applyImageToCamera(next);
+                    }}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${imageSettings.wdr ? "bg-blue-600" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${imageSettings.wdr ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
               </CardContent>
             </Card>
           </div>
