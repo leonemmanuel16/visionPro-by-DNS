@@ -14,7 +14,7 @@ ENV TZ=America/Monterrey
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-    ffmpeg \
+    ffmpeg tzdata \
     gcc g++ cmake make \
     curl \
     # NVDEC/NVENC — hardware video decode/encode via FFmpeg
