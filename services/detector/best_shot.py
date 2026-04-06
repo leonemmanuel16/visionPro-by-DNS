@@ -85,9 +85,16 @@ class BestShotSelector:
 
         # Spatial memory: camera → list of (bbox_center, label, timestamp)
         self._spatial_memory: dict[str, list[tuple[tuple[float, float], str, float]]] = {}
-        self.SPATIAL_RADIUS_PCT = 4.0   # 4% of frame
+        self.SPATIAL_RADIUS_PCT = 8.0   # 8% of frame — wider radius to catch moving objects
         self.SPATIAL_MEMORY_TTL_VEHICLE = 86400  # 24 hours — parked cars NEVER re-trigger
         self.SPATIAL_MEMORY_TTL_DEFAULT = 86400  # 24 hours — same for persons at same position
+
+        # Per-camera per-class cooldown: camera:class → last_publish_time
+        # Prevents multiple alerts for the same type of object passing through
+        self._class_cooldown: dict[str, float] = {}
+        self.CLASS_COOLDOWN_VEHICLE = 30.0  # 30s — one vehicle alert per camera per 30s
+        self.CLASS_COOLDOWN_PERSON = 15.0   # 15s — one person alert per camera per 15s
+        self.CLASS_COOLDOWN_DEFAULT = 10.0  # 10s — other classes
 
         self._frame_counter: dict[str, int] = {}
         self._last_cleanup = time.monotonic()
@@ -121,8 +128,38 @@ class BestShotSelector:
         """Return spatial memory TTL based on object class."""
         base = label.split(":")[0]
         if base in self.VEHICLE_LABELS:
-            return self.SPATIAL_MEMORY_TTL_VEHICLE  # 1 hour — parked cars
-        return self.SPATIAL_MEMORY_TTL_DEFAULT  # 2 min — persons/animals
+            return self.SPATIAL_MEMORY_TTL_VEHICLE
+        return self.SPATIAL_MEMORY_TTL_DEFAULT
+
+    def _class_cooldown_seconds(self, label: str) -> float:
+        """Cooldown duration per class type."""
+        base = label.split(":")[0]
+        if base in self.VEHICLE_LABELS:
+            return self.CLASS_COOLDOWN_VEHICLE
+        if base == "person":
+            return self.CLASS_COOLDOWN_PERSON
+        return self.CLASS_COOLDOWN_DEFAULT
+
+    def _is_on_cooldown(self, camera_id: str, label: str) -> bool:
+        """Check if this camera+class is in cooldown (recently published)."""
+        base = label.split(":")[0]
+        # Map to general class (car/truck/bus → vehicle)
+        if base in self.VEHICLE_LABELS:
+            cls = "vehicle"
+        else:
+            cls = base
+        key = f"{camera_id}:{cls}"
+        last = self._class_cooldown.get(key, 0)
+        return (time.monotonic() - last) < self._class_cooldown_seconds(label)
+
+    def _set_cooldown(self, camera_id: str, label: str):
+        """Mark this camera+class as just published."""
+        base = label.split(":")[0]
+        if base in self.VEHICLE_LABELS:
+            cls = "vehicle"
+        else:
+            cls = base
+        self._class_cooldown[f"{camera_id}:{cls}"] = time.monotonic()
 
     def _is_near_published(self, camera_id: str, center: tuple[float, float],
                            frame_shape: tuple, label: str = "") -> bool:
@@ -277,6 +314,14 @@ class BestShotSelector:
 
             if (has_left or timed_out) and buf.best is not None:
                 if buf.best.confidence >= self.confidence_threshold:
+                    # Per-camera per-class cooldown: only 1 vehicle per 30s, 1 person per 15s
+                    if self._is_on_cooldown(camera_id, buf.label):
+                        log.debug("best_shot.cooldown_suppressed",
+                                  tracker_id=buf.tracker_id, label=buf.label)
+                        self._published.add(key)
+                        to_remove.append(key)
+                        continue
+
                     # Attach full frame for snapshot: use current_frame (or the crop as fallback)
                     if current_frame is not None:
                         buf.best.frame = current_frame.copy()
@@ -289,6 +334,7 @@ class BestShotSelector:
                     center = self._bbox_center(buf.best.bbox)
                     self._remember_position(camera_id, center, buf.label)
                     self._published.add(key)
+                    self._set_cooldown(camera_id, buf.label)
 
                     log.info(
                         "best_shot.publish",
