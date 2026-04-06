@@ -338,22 +338,11 @@ class DetectorService:
                 detections = await self.batch_detector.submit(frame)
 
                 if not detections:
-                    frame_count += 1
-                    # Log zero-detection diagnostic every ~10s so we can debug indoor cameras
-                    if frame_count % (self.detection_fps * 10) == 1:
-                        log.info("pipeline.zero_dets", camera=camera_name,
-                                 frame_shape=f"{frame.shape[1]}x{frame.shape[0]}")
-                    # Publish empty tracking so frontend clears stale boxes
-                    import json as _json_empty
-                    await self.redis.publish("tracking", _json_empty.dumps({
-                        "camera_id": camera_id, "tracks": [], "person_count": 0,
-                    }))
-                    await asyncio.sleep(frame_interval)
-                    continue
+                    detections = []
 
                 # Filter by per-camera detect_classes
                 pre_filter_count = len(detections)
-                if detect_classes:
+                if detect_classes and detections:
                     allowed = set(detect_classes)
                     # Feature flags that imply "person" detection
                     PERSON_FLAGS = {"face_recognition", "face_unknown", "person_count", "loitering", "line_crossing"}
@@ -368,17 +357,6 @@ class DetectorService:
                         d for d in detections
                         if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
                     ]
-                    if not detections:
-                        if frame_count % 50 == 0:
-                            log.info("pipeline.class_filter_drop", camera=camera_name,
-                                     pre=pre_filter_count, allowed=list(allowed))
-                        # Publish empty tracking so frontend clears stale boxes
-                        import json as _json_empty2
-                        await self.redis.publish("tracking", _json_empty2.dumps({
-                            "camera_id": camera_id, "tracks": [], "person_count": 0,
-                        }))
-                        await asyncio.sleep(frame_interval)
-                        continue
 
                 # Track objects
                 tracked = tracker.update(detections, frame)
