@@ -392,7 +392,7 @@ class DetectorService:
                 frame_count += 1
 
                 # ── DIAGNOSTIC: Log pipeline stages every ~10 seconds ──
-                if frame_count % self.detection_fps == 1:  # Diag every 1 second
+                if frame_count % (self.detection_fps * 10) == 1:  # Diag every 10 seconds
                     active_bufs = len([k for k in best_shot._buffers if k.startswith(camera_id)])
                     published_count = len([k for k in best_shot._published if k.startswith(camera_id)])
                     log.info("pipeline.diag", camera=camera_name,

@@ -1,4 +1,4 @@
-"""YOLO Detection Wrapper — YOLO26n + TensorRT FP16 (Dynamic Batch).
+"""YOLO Detection Wrapper — YOLO26s + TensorRT FP16 (Dynamic Batch).
 
 YOLO26 is NMS-free (end-to-end), giving lower latency.
 TensorRT export compiles the model with dynamic batch (1-16) for GPU-efficient batching.
@@ -56,14 +56,14 @@ class YOLODetector:
     }
 
     # Fallback model order if primary fails (larger -> smaller)
-    MODEL_FALLBACKS = ["yolo26n", "yolo26s", "yolo11s"]
+    MODEL_FALLBACKS = ["yolo26s", "yolo26n", "yolo11s"]
 
     # Max batch size for TensorRT dynamic batching
     ENGINE_MAX_BATCH = 16
 
     def __init__(
         self,
-        model_name: str = "yolo26n",
+        model_name: str = "yolo26s",
         confidence: float = 0.5,
         device: str = "auto",
     ):

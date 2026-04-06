@@ -42,20 +42,17 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Pre-download YOLO26n model and export TensorRT engine with dynamic batch
-# This takes 2-5 minutes but makes container startup instant
-# Dynamic batch (1-16) enables true GPU-batched inference across cameras
+# Pre-download YOLO26s model (small — better accuracy than nano for indoor/overhead views)
+# TensorRT engine will be built at first run on the GPU (takes 2-5 min, then cached in volume)
+# Also download yolo26n as fallback
 RUN python3 -c "\
 from ultralytics import YOLO; \
-import torch; \
-print('Downloading yolo26n...'); \
-m = YOLO('yolo26n.pt'); \
-if torch.cuda.is_available(): \
-    print('Exporting TensorRT engine with dynamic batch=16, FP16...'); \
-    m.export(format='engine', half=True, batch=16, dynamic=True); \
-    print('TensorRT dynamic batch engine built successfully'); \
-else: \
-    print('No GPU at build time, TensorRT engine will be built at first run'); \
-" || echo "Model pre-build failed (will retry at runtime)"
+print('Downloading yolo26s...'); \
+m = YOLO('yolo26s.pt'); \
+print('yolo26s.pt downloaded successfully'); \
+print('Downloading yolo26n (fallback)...'); \
+m2 = YOLO('yolo26n.pt'); \
+print('yolo26n.pt downloaded successfully'); \
+" || echo "Model download failed (will retry at runtime)"
 
 CMD ["python3", "main.py"]
