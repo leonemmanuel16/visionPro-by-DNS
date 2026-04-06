@@ -564,20 +564,18 @@ class DetectorService:
                 )
 
                 # ── AI SNAPSHOT: Draw boxes on frame, save as JPEG in Redis ──
-                # Every frame gets annotated and stored — dashboard fetches this
-                # instead of go2rtc, so video always shows detections
-                try:
-                    ai_jpeg = await loop.run_in_executor(
-                        self.thread_pool,
-                        annotate_frame, frame, tracked, 1920,
-                    )
-                    # Store with binary Redis (no decode_responses)
-                    # Use SET with EX=2 so stale frames auto-expire
-                    await self.redis_binary.set(
-                        f"ai_snapshot:{camera_id}", ai_jpeg, ex=2,
-                    )
-                except Exception as e:
-                    log.debug("ai_snapshot.error", camera=camera_name, error=str(e))
+                # Only once per second (every detection_fps frames) to save CPU
+                if frame_count % self.detection_fps == 0:
+                    try:
+                        ai_jpeg = await loop.run_in_executor(
+                            self.thread_pool,
+                            annotate_frame, frame, tracked, 1280,
+                        )
+                        await self.redis_binary.set(
+                            f"ai_snapshot:{camera_id}", ai_jpeg, ex=2,
+                        )
+                    except Exception as e:
+                        log.debug("ai_snapshot.error", camera=camera_name, error=str(e))
 
                 # ── BEST-SHOT: Feed all detections, publish nothing yet ──
                 best_shot.cleanup()
