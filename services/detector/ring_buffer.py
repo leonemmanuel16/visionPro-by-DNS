@@ -25,7 +25,7 @@ log = structlog.get_logger()
 class RingBuffer:
     """Circular frame buffer for one camera."""
 
-    def __init__(self, max_seconds: int = 15, fps: int = 5, jpeg_quality: int = 70):
+    def __init__(self, max_seconds: int = 15, fps: int = 5, jpeg_quality: int = 88):
         self.max_frames = max_seconds * fps
         self.fps = fps
         self.jpeg_quality = jpeg_quality
@@ -105,12 +105,12 @@ def create_clip(
         result = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", tmp_raw,
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 tmp_h264,
             ],
-            capture_output=True, timeout=30,
+            capture_output=True, timeout=60,
         )
 
         if result.returncode == 0 and Path(tmp_h264).exists():
