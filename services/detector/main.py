@@ -1,31 +1,35 @@
-"""DNS Vision AI - AI Detection Service
+"""DNS Vision AI - AI Detection Service (Mosaic Architecture)
 
-Pulls frames from go2rtc streams, runs YOLO detection,
-tracks objects, and publishes detection events.
+Fetches frames from go2rtc sub-streams, builds 3x3 mosaics,
+runs batched YOLO inference (2 mosaics = 18 cameras), remaps
+detections back to per-camera coordinates, then runs tracking,
+face recognition, and event publishing per camera.
 
 Architecture:
-- Each camera has its own async detection loop (grab → detect → track → publish)
-- All cameras share a single BatchDetector for GPU inference (batched YOLO)
-- Frame grabbing uses GpuFrameGrabber (NVDEC) with CPU fallback
+- Single mosaic detection loop processes ALL cameras together
+- go2rtc serves JPEG snapshots (no direct RTSP connections to NVR)
+- 2 YOLO inferences per cycle (batch=2) instead of 18
+- Per-camera ByteTrack, zones, attributes, face recognition
+- 15 fps achievable on NVIDIA T1000 (30 fps capacity vs 30 fps demand)
 """
 
 import asyncio
+import json
 import os
 import signal
-import sys
-import json
+import time
 import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import asyncpg
-import cv2
+import numpy as np
 import redis.asyncio as aioredis
 import structlog
 
 from detector import YOLODetector
-from batch_detector import BatchDetector
-from frame_grabber import FrameGrabber
-from gpu_frame_grabber import GpuFrameGrabber
+from go2rtc_grabber import Go2rtcGrabber
+from mosaic import build_mosaics, remap_detections
 from tracker import ObjectTracker
 from zone_manager import ZoneManager
 from event_publisher import EventPublisher
@@ -62,164 +66,36 @@ class DetectorService:
         self.minio_access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
         self.minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
         self.model_name = os.environ.get("MODEL_NAME", "yolo26s")
-        self.detection_fps = int(os.environ.get("DETECTION_FPS", "5"))
+        self.detection_fps = int(os.environ.get("DETECTION_FPS", "15"))
         self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.05"))
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
         self.device = os.environ.get("DEVICE", "auto")
         self.ring_buffer_seconds = int(os.environ.get("RING_BUFFER_SECONDS", "15"))
-        self.max_batch_size = int(os.environ.get("MAX_BATCH_SIZE", "16"))
-        self.use_gpu_decode = os.environ.get("USE_GPU_DECODE", "true").lower() == "true"
 
         self.db_pool: asyncpg.Pool | None = None
         self.redis: aioredis.Redis | None = None
         self.running = True
-        self.camera_tasks: dict[str, asyncio.Task] = {}
-        self.thread_pool = ThreadPoolExecutor(max_workers=24)  # 18 cameras + headroom
-        self.batch_detector: BatchDetector | None = None
-        self.event_validator: EventValidator | None = None
+        self.thread_pool = ThreadPoolExecutor(max_workers=8)
 
-    async def start(self):
-        log.info("detector.starting", model=self.model_name, fps=self.detection_fps,
-                 max_batch=self.max_batch_size, gpu_decode=self.use_gpu_decode)
+        # Shared components
+        self._detector: YOLODetector | None = None
+        self._grabber: Go2rtcGrabber | None = None
+        self._publisher: EventPublisher | None = None
+        self._zone_manager: ZoneManager | None = None
+        self._face_recognizer: FaceRecognizer | None = None
+        self._event_validator: EventValidator | None = None
 
-        # Connect to databases
-        self.db_pool = await asyncpg.create_pool(
-            self.postgres_url, min_size=2, max_size=10
-        )
-        self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
+        # Per-camera state (managed by _sync_cameras)
+        self.cam_streams: dict[str, str] = {}       # cam_id -> go2rtc stream name
+        self.cam_names: dict[str, str] = {}          # cam_id -> display name
+        self.cam_trackers: dict[str, ObjectTracker] = {}
+        self.cam_best_shots: dict[str, BestShotSelector] = {}
+        self.cam_ring_buffers: dict[str, RingBuffer] = {}
+        self.cam_zones: dict[str, list] = {}
+        self.cam_detect_classes: dict[str, list | None] = {}
+        self.cam_line_crossing: dict[str, dict] = {}
 
-        # Test connections
-        async with self.db_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        await self.redis.ping()
-        log.info("detector.connected", postgres=True, redis=True)
-
-        # Initialize YOLO detector
-        detector = YOLODetector(
-            model_name=self.model_name,
-            confidence=self.confidence_threshold,
-            device=self.device,
-        )
-
-        # Initialize batch detector (centralizes GPU inference across all cameras)
-        self.batch_detector = BatchDetector(
-            detector,
-            max_batch_size=self.max_batch_size,
-            batch_timeout=0.08,  # 80ms — collect more frames per batch for GPU efficiency
-        )
-        await self.batch_detector.start()
-
-        # Initialize event validator (post-publish false positive elimination)
-        self.event_validator = EventValidator(
-            detector=detector,
-            db_pool=self.db_pool,
-        )
-        await self.event_validator.start()
-
-        # Initialize event publisher
-        publisher = EventPublisher(
-            db_pool=self.db_pool,
-            redis=self.redis,
-            minio_endpoint=self.minio_endpoint,
-            minio_access_key=self.minio_access_key,
-            minio_secret_key=self.minio_secret_key,
-        )
-
-        # Initialize zone manager
-        zone_manager = ZoneManager(self.db_pool)
-
-        # Initialize face recognizer (with MinIO for saving face thumbnails)
-        from minio import Minio
-        minio_client = Minio(
-            self.minio_endpoint,
-            access_key=self.minio_access_key,
-            secret_key=self.minio_secret_key,
-            secure=False,
-        )
-        face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
-
-        # Start detection for existing cameras
-        await self._start_camera_detections(publisher, zone_manager, face_recognizer)
-
-        # Listen for camera events (new cameras, removed cameras)
-        listener_task = asyncio.create_task(
-            self._listen_camera_events(publisher, zone_manager, face_recognizer)
-        )
-
-        # Periodically refresh camera list
-        refresh_task = asyncio.create_task(
-            self._refresh_loop(publisher, zone_manager, face_recognizer)
-        )
-
-        # Periodic database cleanup (events, expired faces)
-        cleanup_task = asyncio.create_task(self._cleanup_loop())
-
-        log.info("detector.started")
-
-        try:
-            await asyncio.gather(listener_task, refresh_task, cleanup_task)
-        except asyncio.CancelledError:
-            log.info("detector.shutting_down")
-
-    async def _start_camera_detections(self, publisher, zone_manager, face_recognizer):
-        """Start detection tasks for enabled cameras, stop tasks for disabled ones."""
-        async with self.db_pool.acquire() as conn:
-            cameras = await conn.fetch(
-                "SELECT id, name, rtsp_sub_stream, rtsp_main_stream, camera_type, config FROM cameras WHERE is_enabled = true AND is_online = true"
-            )
-
-        # Build set of camera IDs that SHOULD be running
-        enabled_ids = {str(cam["id"]) for cam in cameras}
-
-        # Stop tasks for cameras that are no longer enabled/online
-        to_remove = [cid for cid in self.camera_tasks if cid not in enabled_ids]
-        for cid in to_remove:
-            log.info("detector.camera_stopped", camera_id=cid, reason="disabled_or_offline")
-            self.camera_tasks[cid].cancel()
-            del self.camera_tasks[cid]
-
-        # Stagger camera starts to avoid overwhelming the NVR with simultaneous connections
-        new_cameras = []
-        for cam in cameras:
-            cam_id = str(cam["id"])
-            if cam_id not in self.camera_tasks:
-                new_cameras.append(cam)
-
-        for idx, cam in enumerate(new_cameras):
-            cam_id = str(cam["id"])
-            cam_id_short = cam_id.replace("-", "")[:12]
-            cam_name_lower = (cam["name"] or "").lower()
-            cam_type = (cam.get("camera_type") or "").lower()
-            is_fisheye = "fisheye" in cam_name_lower or "fish" in cam_name_lower or cam_type == "fisheye"
-
-            # Connect directly to NVR/camera RTSP (not via go2rtc)
-            # go2rtc doesn't relay HEVC properly over RTSP
-            # Main stream = full 4MP resolution for better detection
-            stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
-            if stream_url:
-                # Load per-camera detect_classes from config
-                cam_config = cam.get("config") or {}
-                if isinstance(cam_config, str):
-                    try:
-                        cam_config = json.loads(cam_config)
-                    except Exception:
-                        cam_config = {}
-                detect_classes = cam_config.get("detect_classes", None)
-
-                task = asyncio.create_task(
-                    self._detection_loop(
-                        cam_id, cam["name"], stream_url, publisher,
-                        zone_manager, face_recognizer, detect_classes=detect_classes,
-                        start_delay=idx * 2.0,  # 2s stagger between cameras
-                    )
-                )
-                self.camera_tasks[cam_id] = task
-                stream_type = "sub" if is_fisheye else "main"
-                log.info("detector.camera_queued", camera_id=cam_id, name=cam["name"],
-                         stream=stream_type, start_delay=f"{idx * 2}s",
-                         detect_classes=detect_classes)
-
-    # YOLO label → UI detection class mapping
+    # ── YOLO label -> UI detection class mapping ──
     YOLO_TO_CLASS = {
         "person": "person",
         "car": "vehicle", "truck": "vehicle", "bus": "vehicle",
@@ -229,443 +105,567 @@ class DetectorService:
         "bear": "animal", "elephant": "animal", "zebra": "animal", "giraffe": "animal",
     }
 
-    def _create_grabber(self, stream_url: str, camera_name: str):
-        """Create frame grabber using OpenCV (CPU decode).
+    async def start(self):
+        log.info("detector.starting", model=self.model_name, fps=self.detection_fps,
+                 architecture="mosaic_3x3")
 
-        GPU grabber (FFmpeg NVDEC) is disabled because the test probe + ffmpeg
-        creates 2+ RTSP connections per camera, overwhelming the NVR.
-        OpenCV VideoCapture handles HEVC fine and only uses 1 connection.
-        """
-        log.info("detector.using_cpu_grabber", camera=camera_name,
-                 url=stream_url[:60])
-        return FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url,
-                            use_cuda=False)
+        # Connect to databases
+        self.db_pool = await asyncpg.create_pool(
+            self.postgres_url, min_size=2, max_size=10
+        )
+        self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
 
-    async def _detection_loop(
-        self, camera_id, camera_name, stream_url, publisher,
-        zone_manager, face_recognizer, detect_classes=None,
-        start_delay: float = 0.0,
-    ):
-        """Main detection loop for a single camera."""
+        async with self.db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        await self.redis.ping()
+        log.info("detector.connected", postgres=True, redis=True)
+
+        # Initialize YOLO detector
+        self._detector = YOLODetector(
+            model_name=self.model_name,
+            confidence=self.confidence_threshold,
+            device=self.device,
+        )
+
+        # Initialize go2rtc frame grabber (replaces per-camera RTSP connections)
+        self._grabber = Go2rtcGrabber(self.go2rtc_url, width=640)
+        await self._grabber.start()
+
+        # Initialize event validator
+        self._event_validator = EventValidator(
+            detector=self._detector,
+            db_pool=self.db_pool,
+        )
+        await self._event_validator.start()
+
+        # Initialize event publisher
+        self._publisher = EventPublisher(
+            db_pool=self.db_pool,
+            redis=self.redis,
+            minio_endpoint=self.minio_endpoint,
+            minio_access_key=self.minio_access_key,
+            minio_secret_key=self.minio_secret_key,
+        )
+
+        # Initialize zone manager
+        self._zone_manager = ZoneManager(self.db_pool)
+
+        # Initialize face recognizer
+        from minio import Minio
+        minio_client = Minio(
+            self.minio_endpoint,
+            access_key=self.minio_access_key,
+            secret_key=self.minio_secret_key,
+            secure=False,
+        )
+        self._face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
+
+        # Load cameras from DB
+        await self._sync_cameras()
+
+        # Start main detection loop
+        detection_task = asyncio.create_task(self._mosaic_detection_loop())
+
+        # Background tasks
+        listener_task = asyncio.create_task(self._listen_camera_events())
+        refresh_task = asyncio.create_task(self._refresh_loop())
+        cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+        log.info("detector.started", cameras=len(self.cam_streams))
+
+        try:
+            await asyncio.gather(detection_task, listener_task, refresh_task, cleanup_task)
+        except asyncio.CancelledError:
+            log.info("detector.shutting_down")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Camera Management
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def _sync_cameras(self):
+        """Sync per-camera state with database. Add new cameras, remove disabled ones."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                cameras = await conn.fetch(
+                    "SELECT id, name, camera_type, config "
+                    "FROM cameras WHERE is_enabled = true AND is_online = true"
+                )
+        except Exception as e:
+            log.warning("detector.sync_cameras_error", error=str(e))
+            return
+
+        enabled_ids = set()
+
+        for cam in cameras:
+            cam_id = str(cam["id"])
+            enabled_ids.add(cam_id)
+
+            if cam_id in self.cam_streams:
+                continue  # already tracked
+
+            cam_id_short = cam_id.replace("-", "")[:12]
+            stream_name = f"cam_{cam_id_short}_sub"
+
+            # Parse per-camera config
+            cam_config = cam.get("config") or {}
+            if isinstance(cam_config, str):
+                try:
+                    cam_config = json.loads(cam_config)
+                except Exception:
+                    cam_config = {}
+
+            self.cam_streams[cam_id] = stream_name
+            self.cam_names[cam_id] = cam["name"] or "unknown"
+            self.cam_trackers[cam_id] = ObjectTracker(frame_rate=self.detection_fps)
+            self.cam_best_shots[cam_id] = BestShotSelector(
+                min_bbox_area=2000,
+                min_person_height=40,
+                max_hold_time=8.0,
+                gone_frames=self.detection_fps * 2,  # 2 seconds
+                confidence_threshold=0.05,
+            )
+            self.cam_ring_buffers[cam_id] = RingBuffer(
+                max_seconds=self.ring_buffer_seconds,
+                fps=self.detection_fps,
+            )
+            self.cam_zones[cam_id] = await self._zone_manager.get_zones(cam_id)
+            self.cam_detect_classes[cam_id] = cam_config.get("detect_classes", None)
+            self.cam_line_crossing[cam_id] = {}
+
+            log.info("detector.camera_added", camera_id=cam_id,
+                     name=cam["name"], stream=stream_name)
+
+        # Remove cameras no longer enabled/online
+        to_remove = [cid for cid in self.cam_streams if cid not in enabled_ids]
+        for cid in to_remove:
+            log.info("detector.camera_removed", camera_id=cid,
+                     name=self.cam_names.get(cid))
+            self.cam_streams.pop(cid, None)
+            self.cam_names.pop(cid, None)
+            self.cam_trackers.pop(cid, None)
+            self.cam_best_shots.pop(cid, None)
+            self.cam_ring_buffers.pop(cid, None)
+            self.cam_zones.pop(cid, None)
+            self.cam_detect_classes.pop(cid, None)
+            self.cam_line_crossing.pop(cid, None)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Main Mosaic Detection Loop
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def _mosaic_detection_loop(self):
+        """Single loop that processes ALL cameras via 3x3 mosaics."""
         loop = asyncio.get_event_loop()
-
-        # Stagger start to avoid overwhelming NVR with simultaneous RTSP connections
-        if start_delay > 0:
-            log.info("detector.camera_waiting", camera=camera_name, delay=f"{start_delay:.0f}s")
-            await asyncio.sleep(start_delay)
-
-        # Create frame grabber — use CPU (OpenCV) directly for NVR streams
-        # GPU grabber (FFmpeg NVDEC) test probe creates extra RTSP connections
-        # that overwhelm the NVR, so we skip it and go straight to OpenCV
-        grabber = await loop.run_in_executor(
-            self.thread_pool, self._create_grabber, stream_url, camera_name
-        )
-
-        tracker = ObjectTracker()
-        best_shot = BestShotSelector(
-            min_bbox_area=5000,      # ~70x70px — good for 4MP (2688x1520)
-            min_person_height=120,   # ~8% of 1520px frame height
-            max_hold_time=8.0,       # Publish after 8s max — gives time for best frame
-            gone_frames=10,          # Publish 2s after object leaves (10 frames at 5fps)
-            confidence_threshold=0.05,  # Very low threshold for indoor overhead cameras
-        )
-        ring_buffer = RingBuffer(
-            max_seconds=self.ring_buffer_seconds,
-            fps=self.detection_fps,
-        )
-
-        # Load zones for this camera
-        zones = await zone_manager.get_zones(camera_id)
-
+        detector = self._detector
+        grabber = self._grabber
         frame_interval = 1.0 / self.detection_fps
         frame_count = 0
         face_every_n = 3
-        enable_check_interval = self.detection_fps * 10
-        # Reload config & zones every ~30 seconds
-        config_reload_interval = self.detection_fps * 30
-        # Person count publish interval (~every 30 seconds)
-        person_count_interval = self.detection_fps * 30
-        # Line crossing state: tracker_id → last_side ("A" or "B") for each tripwire zone
-        line_crossing_state: dict[str, dict[int, str]] = {}
+        config_reload_every = self.detection_fps * 30   # every ~30s
+        diag_every = self.detection_fps * 10             # every ~10s
+
+        log.info("mosaic_loop.started", fps=self.detection_fps,
+                 interval_ms=f"{frame_interval * 1000:.0f}")
 
         while self.running:
             try:
-                # Periodically verify camera is still enabled + reload config & zones
-                if frame_count > 0 and frame_count % enable_check_interval == 0:
-                    try:
-                        async with self.db_pool.acquire() as conn:
-                            cam_row = await conn.fetchrow(
-                                "SELECT is_enabled, config FROM cameras WHERE id = $1",
-                                _uuid.UUID(camera_id)
-                            )
-                        if not cam_row or not cam_row["is_enabled"]:
-                            log.info("detector.camera_disabled", camera_id=camera_id, name=camera_name)
-                            break
-                        # Reload detect_classes from DB config
-                        if frame_count % config_reload_interval == 0:
-                            new_config = cam_row.get("config") or {}
-                            if isinstance(new_config, str):
-                                try:
-                                    new_config = json.loads(new_config)
-                                except Exception:
-                                    new_config = {}
-                            new_classes = new_config.get("detect_classes", None)
-                            if new_classes != detect_classes:
-                                log.info("detector.config_reloaded", camera=camera_name,
-                                         old=detect_classes, new=new_classes)
-                                detect_classes = new_classes
-                            # Reload zones
-                            zones = await zone_manager.refresh_zones(camera_id)
-                    except Exception:
-                        pass
+                t0 = time.monotonic()
 
-                # Grab frame in thread pool (blocking I/O)
-                frame = await loop.run_in_executor(self.thread_pool, grabber.grab_frame)
+                # Reload camera list & zones periodically
+                if frame_count > 0 and frame_count % config_reload_every == 0:
+                    await self._sync_cameras()
+                    # Refresh zones for all cameras
+                    for cid in list(self.cam_streams):
+                        try:
+                            self.cam_zones[cid] = await self._zone_manager.refresh_zones(cid)
+                        except Exception:
+                            pass
 
-                if frame is None:
-                    log.debug("detector.frame_none", camera=camera_name)
-                    await asyncio.sleep(1)
+                if not self.cam_streams:
+                    await asyncio.sleep(2)
                     continue
 
-                # Process at native resolution (4MP OK — YOLO resizes internally,
-                # higher res = better faces, colors, animals, snapshot quality)
-                log.debug("detector.frame_ok", camera=camera_name, shape=f"{frame.shape[1]}x{frame.shape[0]}")
+                # ── Step 1: Fetch all frames from go2rtc (parallel HTTP) ──
+                frames = await grabber.fetch_all(self.cam_streams)
+                t_fetch = time.monotonic()
 
-                # Push frame to ring buffer (for video clips)
-                ring_buffer.push(frame)
+                if not frames:
+                    await asyncio.sleep(0.5)
+                    continue
 
-                # Submit frame to batch detector (waits for batched inference)
-                detections = await self.batch_detector.submit(frame)
+                # ── Step 2: Build mosaics (CPU, fast) ──
+                mosaics, tile_map = build_mosaics(frames)
+                t_mosaic = time.monotonic()
 
-                if not detections:
-                    detections = []
-
-                # Filter by per-camera detect_classes
-                pre_filter_count = len(detections)
-                if detect_classes and detections:
-                    allowed = set(detect_classes)
-                    # Feature flags that imply "person" detection
-                    PERSON_FLAGS = {"face_recognition", "face_unknown", "person_count", "loitering", "line_crossing"}
-                    if allowed & PERSON_FLAGS:
-                        allowed.add("person")
-                    # "abandoned_object" and "intrusion" need person/vehicle detection
-                    if "abandoned_object" in allowed:
-                        allowed.update({"person", "vehicle"})
-                    if "intrusion" in allowed:
-                        allowed.update({"person", "vehicle", "animal"})
-                    detections = [
-                        d for d in detections
-                        if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
-                    ]
-
-                # Track objects
-                tracked = tracker.update(detections, frame)
-
-                # Filter by zones
-                filtered = zone_manager.filter_detections(tracked, zones, frame_shape=frame.shape)
-
-                if tracked and not filtered and frame_count % 50 == 0:
-                    labels = [d.label for d in tracked[:5]]
-                    log.warning("pipeline.zone_filter_drop_all",
-                                camera=camera_name,
-                                tracked=len(tracked), filtered=0,
-                                zones=len(zones), labels=labels)
-
-                # Attribute extraction + face recognition
-                frame_count += 1
-
-                # ── DIAGNOSTIC: Log pipeline stages every ~10 seconds ──
-                if frame_count % (self.detection_fps * 10) == 1:  # Diag every 10 seconds
-                    active_bufs = len([k for k in best_shot._buffers if k.startswith(camera_id)])
-                    published_count = len([k for k in best_shot._published if k.startswith(camera_id)])
-                    log.info("pipeline.diag", camera=camera_name,
-                             raw_dets=pre_filter_count,
-                             after_class_filter=len(detections),
-                             tracked=len(tracked),
-                             after_zone_filter=len(filtered),
-                             zones_configured=len(zones),
-                             best_shot_buffers=active_bufs,
-                             best_shot_published=published_count)
-                run_face = (frame_count % face_every_n == 0) and face_recognizer.available
-                for det in tracked:
-                    base_label = det.label.split(":")[0]
-
-                    # Extract clothing colors and headgear for persons
-                    # Skip if crop region is low quality (avoids inventing colors from gray frames)
-                    if base_label == "person":
-                        try:
-                            crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
-                            if crop_quality["is_valid"] and crop_quality.get("variance", 0) >= 400:
-                                attrs = extract_person_attributes(frame, det.bbox)
-                                if det.metadata is None:
-                                    det.metadata = {}
-                                det.metadata["upper_color"] = attrs["upper_color"]
-                                det.metadata["lower_color"] = attrs["lower_color"]
-                                det.metadata["headgear"] = attrs["headgear"]
-                        except Exception:
-                            pass
-
-                    # Extract vehicle attributes (color, type, plate)
-                    if base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
-                        try:
-                            crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
-                            if crop_quality["is_valid"]:
-                                vattrs = extract_vehicle_attributes(frame, det.bbox, yolo_label=base_label)
-                                if det.metadata is None:
-                                    det.metadata = {}
-                                det.metadata["vehicle_color"] = vattrs["vehicle_color"]
-                                det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
-                                det.metadata["vehicle_type"] = vattrs["vehicle_type"]
-                                if vattrs.get("license_plate"):
-                                    det.metadata["license_plate"] = vattrs["license_plate"]
-                        except Exception:
-                            pass
-
-                # Multi-face detection: detect all faces in full frame at once
-                if run_face and any(d.label.split(":")[0] == "person" for d in tracked):
-                    person_dets = [d for d in tracked if d.label.split(":")[0] == "person"]
-                    try:
-                        face_results = await face_recognizer.recognize_all_faces(frame, camera_id, person_dets)
-                        for result in face_results:
-                            # Find the detection with matching tracker_id and update its metadata
-                            for det in tracked:
-                                if det.tracker_id == result["tracker_id"]:
-                                    if det.metadata is None:
-                                        det.metadata = {}
-                                    if result.get("person_id"):
-                                        det.metadata["person_id"] = result["person_id"]
-                                        det.metadata["person_name"] = result["person_name"]
-                                        det.metadata["face_confidence"] = result["face_confidence"]
-                                        det.label = f"person:{result['person_name']}"
-                                    if result.get("face_detected"):
-                                        det.metadata["face_detected"] = True
-                                    if result.get("face_bbox"):
-                                        det.metadata["face_bbox"] = result["face_bbox"]
-                                    break
-                    except Exception as e:
-                        log.debug("face_recognition.error", error=str(e))
-
-                # ── PERSON COUNT: Publish periodic count of persons in frame ──
-                if (detect_classes and "person_count" in detect_classes
-                        and frame_count % person_count_interval == 0):
-                    person_dets_count = [d for d in filtered if d.label.split(":")[0] == "person"]
-                    if person_dets_count:
-                        details = []
-                        for pd in person_dets_count:
-                            detail = {
-                                "tracker_id": pd.tracker_id,
-                                "bbox": list(pd.bbox),
-                                "confidence": round(pd.confidence, 2),
-                            }
-                            if pd.metadata and pd.metadata.get("person_name"):
-                                detail["person_name"] = pd.metadata["person_name"]
-                            details.append(detail)
-                        try:
-                            await publisher.publish_person_count(
-                                camera_id, camera_name,
-                                len(person_dets_count), details, frame,
-                            )
-                        except Exception as e:
-                            log.debug("person_count.error", error=str(e))
-
-                # ── LINE CROSSING: Detect when objects cross a tripwire zone ──
-                if detect_classes and "line_crossing" in detect_classes and zones:
-                    tripwires = [z for z in zones if z.get("zone_type") == "tripwire"]
-                    for tw in tripwires:
-                        tw_id = str(tw.get("id", ""))
-                        if tw_id not in line_crossing_state:
-                            line_crossing_state[tw_id] = {}
-                        points = tw.get("points", [])
-                        if len(points) >= 2:
-                            p1 = points[0]
-                            p2 = points[1]
-                            lx1, ly1 = p1.get("x", 0), p1.get("y", 0)
-                            lx2, ly2 = p2.get("x", 0), p2.get("y", 0)
-                            # Line direction vector (perpendicular determines side)
-                            dx, dy = lx2 - lx1, ly2 - ly1
-                            for det in filtered:
-                                h_f, w_f = frame.shape[:2]
-                                cx = ((det.bbox[0] + det.bbox[2]) / 2) / w_f
-                                cy = ((det.bbox[1] + det.bbox[3]) / 2) / h_f
-                                # Cross product determines which side of the line
-                                cross = (cx - lx1) * dy - (cy - ly1) * dx
-                                side = "A" if cross > 0 else "B"
-                                prev_side = line_crossing_state[tw_id].get(det.tracker_id)
-                                if prev_side and prev_side != side:
-                                    # Crossed the line!
-                                    direction = f"{prev_side}→{side}"
-                                    if det.metadata is None:
-                                        det.metadata = {}
-                                    det.metadata["line_crossing"] = True
-                                    det.metadata["crossing_direction"] = direction
-                                    det.metadata["tripwire_id"] = tw_id
-                                    log.info("line_crossing.detected",
-                                             camera=camera_name,
-                                             tracker_id=det.tracker_id,
-                                             label=det.label,
-                                             direction=direction)
-                                line_crossing_state[tw_id][det.tracker_id] = side
-
-                # Publish real-time tracking positions via Redis pub/sub
-                # Use ALL tracked detections (not zone-filtered) so overlay shows everything
-                # Zones only affect ALERTS (best_shot), not the live overlay
-                h, w = frame.shape[:2]
-                tracks = []
-                for d in tracked:
-                    x1, y1, x2, y2 = d.bbox
-                    track = {
-                        "id": f"t{d.tracker_id}",
-                        "label": d.label.split(":")[0],
-                        "confidence": round(d.confidence, 2),
-                        "bbox": {
-                            "x": round(x1 / w * 100, 1),
-                            "y": round(y1 / h * 100, 1),
-                            "w": round((x2 - x1) / w * 100, 1),
-                            "h": round((y2 - y1) / h * 100, 1),
-                        },
-                        "trackId": d.tracker_id,
-                    }
-                    if hasattr(d, "metadata") and d.metadata:
-                        pname = d.metadata.get("person_name")
-                        if pname:
-                            track["personName"] = pname
-                        if d.metadata.get("face_bbox"):
-                            ft, fr, fb, fl = d.metadata["face_bbox"]
-                            track["faceBbox"] = {
-                                "x": round(x1 / w * 100, 1),
-                                "y": round(y1 / h * 100, 1),
-                                "w": round((x2 - x1) / w * 100, 1),
-                                "h": round((y2 - y1) * 0.4 / h * 100, 1),
-                            }
-                    if hasattr(d, "metadata") and d.metadata:
-                        attrs = {}
-                        for attr_key in ("upper_color", "lower_color", "headgear",
-                                         "vehicle_color", "vehicle_rgb",
-                                         "vehicle_type", "license_plate"):
-                            if attr_key in d.metadata:
-                                attrs[attr_key] = d.metadata[attr_key]
-                        if attrs:
-                            track["attributes"] = attrs
-                    tracks.append(track)
-
-                person_count_rt = sum(1 for d in tracked if d.label.split(":")[0] == "person")
-
-                import json as _json
-                await self.redis.publish(
-                    "tracking",
-                    _json.dumps({
-                        "camera_id": camera_id,
-                        "tracks": tracks,
-                        "person_count": person_count_rt,
-                    }),
+                # ── Step 3: YOLO inference on mosaics (GPU) ──
+                yolo_results = await loop.run_in_executor(
+                    self.thread_pool, detector.detect_batch, mosaics
                 )
+                t_yolo = time.monotonic()
 
-                # ── BEST-SHOT: Feed all detections, publish nothing yet ──
-                best_shot.cleanup()
-                current_tracker_ids = set()
+                # ── Step 4: Remap detections to per-camera coordinates ──
+                cam_detections = remap_detections(yolo_results, tile_map)
 
-                for det in filtered:
-                    current_tracker_ids.add(det.tracker_id)
-                    best_shot.update(
-                        camera_id=camera_id,
-                        tracker_id=det.tracker_id,
-                        label=det.label,
-                        class_id=det.class_id,
-                        frame=frame,
-                        bbox=det.bbox,
-                        confidence=det.confidence,
-                        metadata=det.metadata or {},
-                    )
+                frame_count += 1
+                run_face = (frame_count % face_every_n == 0) and self._face_recognizer.available
 
-                # Step 2: Collect ready events — pass current_frame for snapshot
-                from tracker import TrackedDetection as TD
-                ready_events = best_shot.collect(camera_id, current_tracker_ids,
-                                                  current_frame=frame)
-
-                for buf, candidate in ready_events:
-                    # ── PRE-PUBLISH QUALITY GATE ──
-                    quality = EventValidator.check_frame_quality(
-                        candidate.frame, candidate.bbox
-                    )
-                    if not quality["is_valid"]:
-                        log.info("event.pre_publish_rejected",
-                                 camera=camera_name,
-                                 label=buf.label,
-                                 reason=quality["reason"],
-                                 tracker_id=buf.tracker_id)
+                # ── Step 5: Per-camera processing ──
+                for cam_id in list(self.cam_streams):
+                    frame = frames.get(cam_id)
+                    if frame is None:
                         continue
 
-                    best_det = TD(
-                        bbox=candidate.bbox,
-                        label=buf.label,
-                        confidence=candidate.confidence,
-                        class_id=buf.class_id,
-                        tracker_id=buf.tracker_id,
-                        is_new=True,
-                        metadata=candidate.metadata,
+                    detections = cam_detections.get(cam_id, [])
+
+                    await self._process_camera(
+                        cam_id=cam_id,
+                        frame=frame,
+                        detections=detections,
+                        frame_count=frame_count,
+                        run_face=run_face,
+                        show_diag=(frame_count % diag_every == 1),
                     )
 
-                    # Skip clothing color extraction if crop quality is poor
-                    base_label_pub = buf.label.split(":")[0]
-                    if base_label_pub == "person" and quality.get("variance", 9999) < 400:
-                        if best_det.metadata:
-                            for key in ("upper_color", "lower_color", "headgear"):
-                                best_det.metadata.pop(key, None)
+                # ── Timing ──
+                t_end = time.monotonic()
+                elapsed = t_end - t0
+                sleep_time = max(0, frame_interval - elapsed)
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
 
-                    # Create video clip from ring buffer
-                    clip_path = None
-                    try:
-                        pre_frames = ring_buffer.get_pre_event_frames(seconds=10)
-                        if len(pre_frames) >= 5:
-                            clip_bytes = await loop.run_in_executor(
-                                self.thread_pool,
-                                create_clip, pre_frames, [], self.detection_fps
-                            )
-                            if clip_bytes:
-                                from datetime import datetime, timezone
-                                ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                                clip_path = await save_clip_to_minio(
-                                    publisher.minio, clip_bytes,
-                                    _uuid.uuid4().hex,
-                                    ts_str,
-                                )
-                    except Exception as e:
-                        log.debug("ring_buffer.clip_error", error=str(e))
-
-                    event_id = await publisher.publish(
-                        camera_id=camera_id,
-                        camera_name=camera_name,
-                        detection=best_det,
-                        frame=candidate.frame,
-                        clip_path=clip_path,
-                    )
-
-                    # ── POST-PUBLISH VALIDATION ──
-                    if event_id and self.event_validator:
-                        await self.event_validator.submit(
-                            event_id=event_id,
-                            frame=candidate.frame,
-                            bbox=candidate.bbox,
-                            label=buf.label,
-                            confidence=candidate.confidence,
-                        )
-
-                await asyncio.sleep(frame_interval)
+                # Periodic timing log
+                if frame_count % diag_every == 0:
+                    total_dets = sum(len(d) for d in cam_detections.values())
+                    log.info("mosaic_loop.timing",
+                             cameras=len(frames),
+                             mosaics=len(mosaics),
+                             detections=total_dets,
+                             fetch_ms=f"{(t_fetch - t0) * 1000:.0f}",
+                             mosaic_ms=f"{(t_mosaic - t_fetch) * 1000:.0f}",
+                             yolo_ms=f"{(t_yolo - t_mosaic) * 1000:.0f}",
+                             process_ms=f"{(t_end - t_yolo) * 1000:.0f}",
+                             total_ms=f"{elapsed * 1000:.0f}",
+                             target_ms=f"{frame_interval * 1000:.0f}")
 
             except Exception as e:
-                log.error(
-                    "detector.loop_error",
-                    camera_id=camera_id,
-                    error=str(e),
+                log.error("mosaic_loop.error", error=str(e))
+                await asyncio.sleep(1)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Per-Camera Processing
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def _process_camera(
+        self, cam_id: str, frame: np.ndarray, detections: list,
+        frame_count: int, run_face: bool, show_diag: bool,
+    ):
+        """Process detections for a single camera within one mosaic cycle."""
+        cam_name = self.cam_names.get(cam_id, "unknown")
+        tracker = self.cam_trackers.get(cam_id)
+        best_shot = self.cam_best_shots.get(cam_id)
+        ring_buffer = self.cam_ring_buffers.get(cam_id)
+        zones = self.cam_zones.get(cam_id, [])
+        detect_classes = self.cam_detect_classes.get(cam_id)
+
+        if not tracker or not best_shot or not ring_buffer:
+            return
+
+        # Push frame to ring buffer (for video clips)
+        ring_buffer.push(frame)
+
+        # ── Class filtering ──
+        pre_filter_count = len(detections)
+        if detect_classes and detections:
+            allowed = set(detect_classes)
+            PERSON_FLAGS = {"face_recognition", "face_unknown", "person_count", "loitering", "line_crossing"}
+            if allowed & PERSON_FLAGS:
+                allowed.add("person")
+            if "abandoned_object" in allowed:
+                allowed.update({"person", "vehicle"})
+            if "intrusion" in allowed:
+                allowed.update({"person", "vehicle", "animal"})
+            detections = [
+                d for d in detections
+                if self.YOLO_TO_CLASS.get(d.label.split(":")[0], d.label.split(":")[0]) in allowed
+            ]
+
+        # ── Track objects (ByteTrack always runs, even with 0 detections) ──
+        tracked = tracker.update(detections, frame)
+
+        # ── Zone filtering (affects alerts only, not live overlay) ──
+        filtered = self._zone_manager.filter_detections(tracked, zones, frame_shape=frame.shape)
+
+        if tracked and not filtered and frame_count % 50 == 0:
+            labels = [d.label for d in tracked[:5]]
+            log.warning("pipeline.zone_filter_drop_all",
+                        camera=cam_name, tracked=len(tracked),
+                        filtered=0, zones=len(zones), labels=labels)
+
+        # ── Diagnostic log ──
+        if show_diag:
+            active_bufs = len([k for k in best_shot._buffers if k.startswith(cam_id)])
+            published_count = len([k for k in best_shot._published if k.startswith(cam_id)])
+            log.info("pipeline.diag", camera=cam_name,
+                     raw_dets=pre_filter_count,
+                     after_class_filter=len(detections),
+                     tracked=len(tracked),
+                     after_zone_filter=len(filtered),
+                     zones_configured=len(zones),
+                     best_shot_buffers=active_bufs,
+                     best_shot_published=published_count)
+
+        # ── Attribute extraction ──
+        for det in tracked:
+            base_label = det.label.split(":")[0]
+
+            if base_label == "person":
+                try:
+                    crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
+                    if crop_quality["is_valid"] and crop_quality.get("variance", 0) >= 400:
+                        attrs = extract_person_attributes(frame, det.bbox)
+                        if det.metadata is None:
+                            det.metadata = {}
+                        det.metadata["upper_color"] = attrs["upper_color"]
+                        det.metadata["lower_color"] = attrs["lower_color"]
+                        det.metadata["headgear"] = attrs["headgear"]
+                except Exception:
+                    pass
+
+            if base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
+                try:
+                    crop_quality = EventValidator.check_frame_quality(frame, det.bbox)
+                    if crop_quality["is_valid"]:
+                        vattrs = extract_vehicle_attributes(frame, det.bbox, yolo_label=base_label)
+                        if det.metadata is None:
+                            det.metadata = {}
+                        det.metadata["vehicle_color"] = vattrs["vehicle_color"]
+                        det.metadata["vehicle_rgb"] = vattrs["vehicle_rgb"]
+                        det.metadata["vehicle_type"] = vattrs["vehicle_type"]
+                        if vattrs.get("license_plate"):
+                            det.metadata["license_plate"] = vattrs["license_plate"]
+                except Exception:
+                    pass
+
+        # ── Face recognition (on original 640x360 frame, not 213px tile) ──
+        if run_face and any(d.label.split(":")[0] == "person" for d in tracked):
+            person_dets = [d for d in tracked if d.label.split(":")[0] == "person"]
+            try:
+                face_results = await self._face_recognizer.recognize_all_faces(
+                    frame, cam_id, person_dets
                 )
-                await asyncio.sleep(5)
+                for result in face_results:
+                    for det in tracked:
+                        if det.tracker_id == result["tracker_id"]:
+                            if det.metadata is None:
+                                det.metadata = {}
+                            if result.get("person_id"):
+                                det.metadata["person_id"] = result["person_id"]
+                                det.metadata["person_name"] = result["person_name"]
+                                det.metadata["face_confidence"] = result["face_confidence"]
+                                det.label = f"person:{result['person_name']}"
+                            if result.get("face_detected"):
+                                det.metadata["face_detected"] = True
+                            if result.get("face_bbox"):
+                                det.metadata["face_bbox"] = result["face_bbox"]
+                            break
+            except Exception as e:
+                log.debug("face_recognition.error", error=str(e))
 
-        grabber.release()
-        if camera_id in self.camera_tasks:
-            del self.camera_tasks[camera_id]
-        log.info("detector.camera_loop_ended", camera_id=camera_id, name=camera_name)
+        # ── Person count (periodic, every ~30s) ──
+        person_count_interval = self.detection_fps * 30
+        if (detect_classes and "person_count" in detect_classes
+                and frame_count % person_count_interval == 0):
+            person_dets_count = [d for d in filtered if d.label.split(":")[0] == "person"]
+            if person_dets_count:
+                details = []
+                for pd in person_dets_count:
+                    detail = {
+                        "tracker_id": pd.tracker_id,
+                        "bbox": list(pd.bbox),
+                        "confidence": round(pd.confidence, 2),
+                    }
+                    if pd.metadata and pd.metadata.get("person_name"):
+                        detail["person_name"] = pd.metadata["person_name"]
+                    details.append(detail)
+                try:
+                    await self._publisher.publish_person_count(
+                        cam_id, cam_name, len(person_dets_count), details, frame,
+                    )
+                except Exception as e:
+                    log.debug("person_count.error", error=str(e))
 
-    async def _listen_camera_events(self, publisher, zone_manager, face_recognizer):
+        # ── Line crossing (tripwire zones) ──
+        if detect_classes and "line_crossing" in detect_classes and zones:
+            lc_state = self.cam_line_crossing.setdefault(cam_id, {})
+            tripwires = [z for z in zones if z.get("zone_type") == "tripwire"]
+            for tw in tripwires:
+                tw_id = str(tw.get("id", ""))
+                if tw_id not in lc_state:
+                    lc_state[tw_id] = {}
+                points = tw.get("points", [])
+                if len(points) >= 2:
+                    p1, p2 = points[0], points[1]
+                    lx1, ly1 = p1.get("x", 0), p1.get("y", 0)
+                    lx2, ly2 = p2.get("x", 0), p2.get("y", 0)
+                    dx, dy = lx2 - lx1, ly2 - ly1
+                    for det in filtered:
+                        h_f, w_f = frame.shape[:2]
+                        cx = ((det.bbox[0] + det.bbox[2]) / 2) / w_f
+                        cy = ((det.bbox[1] + det.bbox[3]) / 2) / h_f
+                        cross = (cx - lx1) * dy - (cy - ly1) * dx
+                        side = "A" if cross > 0 else "B"
+                        prev_side = lc_state[tw_id].get(det.tracker_id)
+                        if prev_side and prev_side != side:
+                            direction = f"{prev_side}\u2192{side}"
+                            if det.metadata is None:
+                                det.metadata = {}
+                            det.metadata["line_crossing"] = True
+                            det.metadata["crossing_direction"] = direction
+                            det.metadata["tripwire_id"] = tw_id
+                            log.info("line_crossing.detected",
+                                     camera=cam_name, tracker_id=det.tracker_id,
+                                     label=det.label, direction=direction)
+                        lc_state[tw_id][det.tracker_id] = side
+
+        # ── Publish real-time tracking (ALL tracked, not zone-filtered) ──
+        h, w = frame.shape[:2]
+        tracks = []
+        for d in tracked:
+            x1, y1, x2, y2 = d.bbox
+            track = {
+                "id": f"t{d.tracker_id}",
+                "label": d.label.split(":")[0],
+                "confidence": round(d.confidence, 2),
+                "bbox": {
+                    "x": round(x1 / w * 100, 1),
+                    "y": round(y1 / h * 100, 1),
+                    "w": round((x2 - x1) / w * 100, 1),
+                    "h": round((y2 - y1) / h * 100, 1),
+                },
+                "trackId": d.tracker_id,
+            }
+            if hasattr(d, "metadata") and d.metadata:
+                pname = d.metadata.get("person_name")
+                if pname:
+                    track["personName"] = pname
+                if d.metadata.get("face_bbox"):
+                    track["faceBbox"] = {
+                        "x": round(x1 / w * 100, 1),
+                        "y": round(y1 / h * 100, 1),
+                        "w": round((x2 - x1) / w * 100, 1),
+                        "h": round((y2 - y1) * 0.4 / h * 100, 1),
+                    }
+            if hasattr(d, "metadata") and d.metadata:
+                attrs = {}
+                for attr_key in ("upper_color", "lower_color", "headgear",
+                                 "vehicle_color", "vehicle_rgb",
+                                 "vehicle_type", "license_plate"):
+                    if attr_key in d.metadata:
+                        attrs[attr_key] = d.metadata[attr_key]
+                if attrs:
+                    track["attributes"] = attrs
+            tracks.append(track)
+
+        person_count_rt = sum(1 for d in tracked if d.label.split(":")[0] == "person")
+
+        await self.redis.publish(
+            "tracking",
+            json.dumps({
+                "camera_id": cam_id,
+                "tracks": tracks,
+                "person_count": person_count_rt,
+            }),
+        )
+
+        # ── Best-shot: feed zone-filtered detections ──
+        best_shot.cleanup()
+        current_tracker_ids = set()
+
+        for det in filtered:
+            current_tracker_ids.add(det.tracker_id)
+            best_shot.update(
+                camera_id=cam_id,
+                tracker_id=det.tracker_id,
+                label=det.label,
+                class_id=det.class_id,
+                frame=frame,
+                bbox=det.bbox,
+                confidence=det.confidence,
+                metadata=det.metadata or {},
+            )
+
+        # Collect ready events
+        from tracker import TrackedDetection as TD
+        ready_events = best_shot.collect(cam_id, current_tracker_ids, current_frame=frame)
+
+        loop = asyncio.get_event_loop()
+        for buf, candidate in ready_events:
+            # Pre-publish quality gate
+            quality = EventValidator.check_frame_quality(candidate.frame, candidate.bbox)
+            if not quality["is_valid"]:
+                log.info("event.pre_publish_rejected",
+                         camera=cam_name, label=buf.label,
+                         reason=quality["reason"], tracker_id=buf.tracker_id)
+                continue
+
+            best_det = TD(
+                bbox=candidate.bbox,
+                label=buf.label,
+                confidence=candidate.confidence,
+                class_id=buf.class_id,
+                tracker_id=buf.tracker_id,
+                is_new=True,
+                metadata=candidate.metadata,
+            )
+
+            # Skip low-quality clothing colors
+            base_label_pub = buf.label.split(":")[0]
+            if base_label_pub == "person" and quality.get("variance", 9999) < 400:
+                if best_det.metadata:
+                    for key in ("upper_color", "lower_color", "headgear"):
+                        best_det.metadata.pop(key, None)
+
+            # Create video clip from ring buffer
+            clip_path = None
+            try:
+                pre_frames = ring_buffer.get_pre_event_frames(seconds=10)
+                if len(pre_frames) >= 5:
+                    clip_bytes = await loop.run_in_executor(
+                        self.thread_pool,
+                        create_clip, pre_frames, [], self.detection_fps
+                    )
+                    if clip_bytes:
+                        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                        clip_path = await save_clip_to_minio(
+                            self._publisher.minio, clip_bytes,
+                            _uuid.uuid4().hex, ts_str,
+                        )
+            except Exception as e:
+                log.debug("ring_buffer.clip_error", error=str(e))
+
+            event_id = await self._publisher.publish(
+                camera_id=cam_id,
+                camera_name=cam_name,
+                detection=best_det,
+                frame=candidate.frame,
+                clip_path=clip_path,
+            )
+
+            # Post-publish validation
+            if event_id and self._event_validator:
+                await self._event_validator.submit(
+                    event_id=event_id,
+                    frame=candidate.frame,
+                    bbox=candidate.bbox,
+                    label=buf.label,
+                    confidence=candidate.confidence,
+                )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Background Tasks
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def _listen_camera_events(self):
         """Listen for camera add/remove events on Redis Stream."""
         last_id = "$"
         while self.running:
@@ -677,18 +677,23 @@ class DetectorService:
                     for entry_id, data in entries:
                         last_id = entry_id
                         event_type = data.get("type")
-                        if event_type in ("camera_discovered", "camera_online"):
-                            await self._start_camera_detections(publisher, zone_manager, face_recognizer)
-                        elif event_type == "camera_offline":
-                            cam_id = data.get("camera_id")
-                            if cam_id in self.camera_tasks:
-                                self.camera_tasks[cam_id].cancel()
-                                del self.camera_tasks[cam_id]
+                        if event_type in ("camera_discovered", "camera_online", "camera_offline"):
+                            await self._sync_cameras()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 log.warning("detector.event_listener_error", error=str(e))
                 await asyncio.sleep(5)
+
+    async def _refresh_loop(self):
+        """Periodically refresh camera list."""
+        while self.running:
+            await asyncio.sleep(30)
+            try:
+                await self._sync_cameras()
+                log.debug("detector.refresh", active_cameras=len(self.cam_streams))
+            except Exception as e:
+                log.warning("detector.refresh_error", error=str(e))
 
     async def _cleanup_loop(self):
         """Periodically clean up old events and expired face data."""
@@ -726,27 +731,12 @@ class DetectorService:
             except Exception as e:
                 log.warning("detector.cleanup_error", error=str(e))
 
-    async def _refresh_loop(self, publisher, zone_manager, face_recognizer):
-        """Periodically refresh camera list — starts new, stops disabled."""
-        while self.running:
-            await asyncio.sleep(30)
-            try:
-                await self._start_camera_detections(publisher, zone_manager, face_recognizer)
-                active = len(self.camera_tasks)
-                log.debug("detector.refresh", active_cameras=active)
-            except Exception as e:
-                log.warning("detector.refresh_error", error=str(e))
-
     async def stop(self):
         self.running = False
-        # Stop event validator
-        if self.event_validator:
-            await self.event_validator.stop()
-        # Stop batch detector first (unblocks waiting camera loops)
-        if self.batch_detector:
-            await self.batch_detector.stop()
-        for task in self.camera_tasks.values():
-            task.cancel()
+        if self._event_validator:
+            await self._event_validator.stop()
+        if self._grabber:
+            await self._grabber.stop()
         if self.db_pool:
             await self.db_pool.close()
         if self.redis:

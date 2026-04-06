@@ -69,8 +69,6 @@ services:
       - GO2RTC_URL=http://localhost:1984
       - DEVICE=${DEVICE:-auto}
       - RING_BUFFER_SECONDS=${RING_BUFFER_SECONDS:-15}
-      - MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-16}
-      - USE_GPU_DECODE=${USE_GPU_DECODE:-true}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
     volumes:
