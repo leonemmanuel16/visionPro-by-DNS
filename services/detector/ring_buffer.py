@@ -12,12 +12,15 @@ import io
 import os
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
 import numpy as np
 import structlog
 from minio import Minio
+
+from watermark import apply_watermark
 
 log = structlog.get_logger()
 
@@ -101,9 +104,15 @@ def create_clip(
             log.warning("ring_buffer.writer_failed", msg="Could not open VideoWriter")
             return None
 
-        for frame in all_frames:
+        now = datetime.now()
+        clip_duration = len(all_frames) / max(fps, 1)
+        clip_start = now - timedelta(seconds=clip_duration)
+
+        for i, frame in enumerate(all_frames):
             if frame.shape[:2] != (h, w):
                 frame = cv2.resize(frame, (w, h))
+            frame_ts = clip_start + timedelta(seconds=i / max(fps, 1))
+            apply_watermark(frame, timestamp=frame_ts)
             writer.write(frame)
 
         writer.release()

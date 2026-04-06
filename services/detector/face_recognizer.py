@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 import structlog
 from minio import Minio
+from watermark import apply_watermark
 
 log = structlog.get_logger()
 
@@ -398,7 +399,9 @@ class FaceRecognizer:
 
             # Also save full snapshot for context (4MP if available)
             try:
-                _, full_buf = cv2.imencode(".jpg", use_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                full_copy = use_frame.copy()
+                apply_watermark(full_copy)
+                _, full_buf = cv2.imencode(".jpg", full_copy, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 full_data = full_buf.tobytes()
                 full_name = f"unknown/{now.strftime('%Y%m%d')}/{file_id}_full.jpg"
                 self.minio.put_object(

@@ -29,6 +29,7 @@ from minio import Minio
 from PIL import Image
 
 from tracker import TrackedDetection
+from watermark import apply_watermark
 
 log = structlog.get_logger()
 
@@ -386,6 +387,7 @@ class EventPublisher:
                 annotated, f"Personas: {person_count}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2,
             )
+            apply_watermark(annotated)
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
             object_name = f"{timestamp_str}/{event_id}_group.jpg"
@@ -477,6 +479,7 @@ class EventPublisher:
                     annotated, veh_text, (x1, y2 + int(25 * font_scale)),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.8, (0, 200, 255), thickness,
                 )
+            apply_watermark(annotated)
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
             object_name = f"{timestamp}/{event_id}.jpg"
