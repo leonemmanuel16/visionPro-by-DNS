@@ -404,7 +404,7 @@ class DetectorService:
                              best_shot_buffers=active_bufs,
                              best_shot_published=published_count)
                 run_face = (frame_count % face_every_n == 0) and face_recognizer.available
-                for det in filtered:
+                for det in tracked:
                     base_label = det.label.split(":")[0]
 
                     # Extract clothing colors and headgear for persons
@@ -439,13 +439,13 @@ class DetectorService:
                             pass
 
                 # Multi-face detection: detect all faces in full frame at once
-                if run_face and any(d.label.split(":")[0] == "person" for d in filtered):
-                    person_dets = [d for d in filtered if d.label.split(":")[0] == "person"]
+                if run_face and any(d.label.split(":")[0] == "person" for d in tracked):
+                    person_dets = [d for d in tracked if d.label.split(":")[0] == "person"]
                     try:
                         face_results = await face_recognizer.recognize_all_faces(frame, camera_id, person_dets)
                         for result in face_results:
                             # Find the detection with matching tracker_id and update its metadata
-                            for det in filtered:
+                            for det in tracked:
                                 if det.tracker_id == result["tracker_id"]:
                                     if det.metadata is None:
                                         det.metadata = {}
@@ -524,10 +524,11 @@ class DetectorService:
                                 line_crossing_state[tw_id][det.tracker_id] = side
 
                 # Publish real-time tracking positions via Redis pub/sub
-                # ALWAYS publish — even empty list — so frontend clears stale boxes
+                # Use ALL tracked detections (not zone-filtered) so overlay shows everything
+                # Zones only affect ALERTS (best_shot), not the live overlay
                 h, w = frame.shape[:2]
                 tracks = []
-                for d in filtered:
+                for d in tracked:
                     x1, y1, x2, y2 = d.bbox
                     track = {
                         "id": f"t{d.tracker_id}",
@@ -564,7 +565,7 @@ class DetectorService:
                             track["attributes"] = attrs
                     tracks.append(track)
 
-                person_count_rt = sum(1 for d in filtered if d.label.split(":")[0] == "person")
+                person_count_rt = sum(1 for d in tracked if d.label.split(":")[0] == "person")
 
                 import json as _json
                 await self.redis.publish(
