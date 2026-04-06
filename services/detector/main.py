@@ -74,7 +74,7 @@ class DetectorService:
         self.redis: aioredis.Redis | None = None
         self.running = True
         self.camera_tasks: dict[str, asyncio.Task] = {}
-        self.thread_pool = ThreadPoolExecutor(max_workers=8)
+        self.thread_pool = ThreadPoolExecutor(max_workers=24)  # 18 cameras + headroom
         self.batch_detector: BatchDetector | None = None
         self.event_validator: EventValidator | None = None
 
@@ -178,38 +178,46 @@ class DetectorService:
             self.camera_tasks[cid].cancel()
             del self.camera_tasks[cid]
 
+        # Stagger camera starts to avoid overwhelming the NVR with simultaneous connections
+        new_cameras = []
         for cam in cameras:
             cam_id = str(cam["id"])
             if cam_id not in self.camera_tasks:
-                cam_id_short = cam_id.replace("-", "")[:12]
-                cam_name_lower = (cam["name"] or "").lower()
-                cam_type = (cam.get("camera_type") or "").lower()
-                is_fisheye = "fisheye" in cam_name_lower or "fish" in cam_name_lower or cam_type == "fisheye"
+                new_cameras.append(cam)
 
-                # Connect directly to NVR/camera RTSP (not via go2rtc)
-                # go2rtc doesn't relay HEVC properly over RTSP
-                # Main stream = full 4MP resolution for better detection
-                stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
-                if stream_url:
-                    # Load per-camera detect_classes from config
-                    cam_config = cam.get("config") or {}
-                    if isinstance(cam_config, str):
-                        try:
-                            cam_config = json.loads(cam_config)
-                        except Exception:
-                            cam_config = {}
-                    detect_classes = cam_config.get("detect_classes", None)
+        for idx, cam in enumerate(new_cameras):
+            cam_id = str(cam["id"])
+            cam_id_short = cam_id.replace("-", "")[:12]
+            cam_name_lower = (cam["name"] or "").lower()
+            cam_type = (cam.get("camera_type") or "").lower()
+            is_fisheye = "fisheye" in cam_name_lower or "fish" in cam_name_lower or cam_type == "fisheye"
 
-                    task = asyncio.create_task(
-                        self._detection_loop(
-                            cam_id, cam["name"], stream_url, publisher,
-                            zone_manager, face_recognizer, detect_classes=detect_classes
-                        )
+            # Connect directly to NVR/camera RTSP (not via go2rtc)
+            # go2rtc doesn't relay HEVC properly over RTSP
+            # Main stream = full 4MP resolution for better detection
+            stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
+            if stream_url:
+                # Load per-camera detect_classes from config
+                cam_config = cam.get("config") or {}
+                if isinstance(cam_config, str):
+                    try:
+                        cam_config = json.loads(cam_config)
+                    except Exception:
+                        cam_config = {}
+                detect_classes = cam_config.get("detect_classes", None)
+
+                task = asyncio.create_task(
+                    self._detection_loop(
+                        cam_id, cam["name"], stream_url, publisher,
+                        zone_manager, face_recognizer, detect_classes=detect_classes,
+                        start_delay=idx * 2.0,  # 2s stagger between cameras
                     )
-                    self.camera_tasks[cam_id] = task
-                    stream_type = "sub" if is_fisheye else "main"
-                    log.info("detector.camera_started", camera_id=cam_id, name=cam["name"],
-                             stream=stream_type, detect_classes=detect_classes)
+                )
+                self.camera_tasks[cam_id] = task
+                stream_type = "sub" if is_fisheye else "main"
+                log.info("detector.camera_queued", camera_id=cam_id, name=cam["name"],
+                         stream=stream_type, start_delay=f"{idx * 2}s",
+                         detect_classes=detect_classes)
 
     # YOLO label → UI detection class mapping
     YOLO_TO_CLASS = {
@@ -222,39 +230,33 @@ class DetectorService:
     }
 
     def _create_grabber(self, stream_url: str, camera_name: str):
-        """Create frame grabber: GPU (NVDEC) with CPU fallback."""
-        if self.use_gpu_decode and self.device != "cpu":
-            try:
-                grabber = GpuFrameGrabber(stream_url, self.detection_fps)
-                # Test connection
-                test_frame = grabber.grab_frame()
-                if test_frame is not None:
-                    log.info("detector.using_gpu_grabber", camera=camera_name)
-                    return grabber
-                else:
-                    raise RuntimeError("GPU grabber test frame was None")
-            except Exception as e:
-                log.warning("detector.gpu_grabber_failed", camera=camera_name,
-                            error=str(e), msg="Falling back to CPU frame grabber")
-                # Clean up failed grabber
-                try:
-                    grabber.release()
-                except Exception:
-                    pass
+        """Create frame grabber using OpenCV (CPU decode).
 
-        # CPU fallback
-        log.info("detector.using_cpu_grabber", camera=camera_name)
+        GPU grabber (FFmpeg NVDEC) is disabled because the test probe + ffmpeg
+        creates 2+ RTSP connections per camera, overwhelming the NVR.
+        OpenCV VideoCapture handles HEVC fine and only uses 1 connection.
+        """
+        log.info("detector.using_cpu_grabber", camera=camera_name,
+                 url=stream_url[:60])
         return FrameGrabber(stream_url, self.detection_fps, self.go2rtc_url,
                             use_cuda=False)
 
     async def _detection_loop(
         self, camera_id, camera_name, stream_url, publisher,
-        zone_manager, face_recognizer, detect_classes=None
+        zone_manager, face_recognizer, detect_classes=None,
+        start_delay: float = 0.0,
     ):
         """Main detection loop for a single camera."""
         loop = asyncio.get_event_loop()
 
-        # Create frame grabber (GPU NVDEC with CPU fallback)
+        # Stagger start to avoid overwhelming NVR with simultaneous RTSP connections
+        if start_delay > 0:
+            log.info("detector.camera_waiting", camera=camera_name, delay=f"{start_delay:.0f}s")
+            await asyncio.sleep(start_delay)
+
+        # Create frame grabber — use CPU (OpenCV) directly for NVR streams
+        # GPU grabber (FFmpeg NVDEC) test probe creates extra RTSP connections
+        # that overwhelm the NVR, so we skip it and go straight to OpenCV
         grabber = await loop.run_in_executor(
             self.thread_pool, self._create_grabber, stream_url, camera_name
         )

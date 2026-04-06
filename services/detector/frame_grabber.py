@@ -36,14 +36,18 @@ class FrameGrabber:
             if self.cap is not None:
                 self.cap.release()
 
+            # Force RTSP over TCP — more reliable for HEVC/H.265 streams
+            import os
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
             self.cap = cv2.VideoCapture(self.stream_url, cv2.CAP_FFMPEG)
 
             # Optimize for low latency
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             # Connection timeout — fail fast instead of hanging
-            self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-            self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+            self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
+            self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
 
             # Try hardware acceleration (NVDEC/VAAPI/etc.)
             if self.use_cuda:
