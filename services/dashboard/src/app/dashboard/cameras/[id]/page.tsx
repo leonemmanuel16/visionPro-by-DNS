@@ -491,9 +491,10 @@ export default function CameraDetailPage() {
                 <>
                   <SnapshotPlayer
                     cameraName={streamName}
+                    cameraId={camera.id}
                     isOnline={camera.is_online}
                     className="aspect-video w-full"
-                    intervalMs={67}
+                    intervalMs={150}
                     width={1920}
                     useMainStream={true}
                   />
@@ -507,10 +508,6 @@ export default function CameraDetailPage() {
                       drawColor={drawColor}
                       drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
                     />
-                  )}
-                  {/* Detection boxes — always visible, z-20 above zone overlay */}
-                  {camera.is_online && liveDetections.length > 0 && (
-                    <DetectionOverlay detections={liveDetections} className="z-20" />
                   )}
                 </>
               )}

@@ -89,14 +89,12 @@ export function CameraGrid({ cameras, gridSize, onDelete }: CameraGridProps) {
                 <div className="relative">
                   <SnapshotPlayer
                     cameraName={streamName}
+                    cameraId={camera.id}
                     isOnline={camera.is_online}
                     className="aspect-video"
-                    intervalMs={gridSize === 2 ? 67 : gridSize === 3 ? 100 : 150}
+                    intervalMs={gridSize === 2 ? 150 : gridSize === 3 ? 200 : 250}
                     width={gridSize === 2 ? 640 : gridSize === 3 ? 420 : 320}
                   />
-                  {camera.is_online && detections.length > 0 && (
-                    <DetectionOverlay detections={detections} />
-                  )}
                 </div>
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3">
                   <div className="flex items-center justify-between">

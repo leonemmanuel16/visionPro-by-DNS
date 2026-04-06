@@ -2,32 +2,35 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Loader2, WifiOff } from "lucide-react";
-import { getGo2rtcUrl } from "@/lib/urls";
+import { getGo2rtcUrl, getApiUrl } from "@/lib/urls";
 
 interface SnapshotPlayerProps {
   cameraName: string;
+  /** Camera UUID — used for AI snapshot endpoint */
+  cameraId?: string;
   isOnline?: boolean;
   className?: string;
-  /** Refresh interval in milliseconds (default: 1000ms) */
+  /** Refresh interval in milliseconds (default: 200ms for AI snapshots) */
   intervalMs?: number;
-  /** Image width in pixels (default: 640) */
+  /** Image width in pixels (default: 640, only used for go2rtc fallback) */
   width?: number;
   /** Use main stream instead of sub for higher quality (default: false) */
   useMainStream?: boolean;
 }
 
 /**
- * Fast snapshot player for camera grid.
+ * AI Snapshot Player — shows video with detections already drawn.
  *
- * Fetches JPEG frames from go2rtc at /api/frame.jpeg every ~1 second.
- * Uses double-buffering: loads next image in background, swaps on load.
- * Result: smooth ~1 FPS view with no flicker, 640px wide, very lightweight.
+ * Primary: Fetches AI-annotated JPEGs from the detector via API.
+ * These frames already have bounding boxes, labels, and tracking IDs drawn.
+ * Fallback: If no AI snapshot available, falls back to go2rtc raw stream.
  */
 export function SnapshotPlayer({
   cameraName,
+  cameraId,
   isOnline = true,
   className = "",
-  intervalMs = 1000,
+  intervalMs = 200,
   width = 640,
   useMainStream = false,
 }: SnapshotPlayerProps) {
@@ -39,20 +42,30 @@ export function SnapshotPlayer({
   const failsRef = useRef(0);
   const activeStreamRef = useRef<string>("");
   const loadingRef = useRef(false);
+  const usingAiRef = useRef(true);
 
   const go2rtcUrl = getGo2rtcUrl();
+  const apiUrl = getApiUrl();
 
   const candidates = useMainStream
-    ? [`${cameraName}`, `${cameraName}_sub`]         // Main first for quality
-    : [`${cameraName}_sub`, `${cameraName}`];         // Sub first for speed
+    ? [`${cameraName}`, `${cameraName}_sub`]
+    : [`${cameraName}_sub`, `${cameraName}`];
 
   const fetchFrame = useCallback(() => {
     if (!mountedRef.current || !isOnline || loadingRef.current) return;
     loadingRef.current = true;
 
-    const stream = activeStreamRef.current || candidates[0];
     const img = new Image();
-    const url = `${go2rtcUrl}/api/frame.jpeg?src=${stream}&width=${width}&t=${Date.now()}`;
+    let url: string;
+
+    if (cameraId && usingAiRef.current) {
+      // Primary: AI-annotated snapshot from detector
+      url = `${apiUrl}/cameras/${cameraId}/ai-snapshot?t=${Date.now()}`;
+    } else {
+      // Fallback: raw go2rtc snapshot
+      const stream = activeStreamRef.current || candidates[0];
+      url = `${go2rtcUrl}/api/frame.jpeg?src=${stream}&width=${width}&t=${Date.now()}`;
+    }
 
     img.onload = () => {
       if (!mountedRef.current) return;
@@ -61,7 +74,6 @@ export function SnapshotPlayer({
       setLoading(false);
       setError(false);
       failsRef.current = 0;
-      activeStreamRef.current = stream;
     };
 
     img.onerror = () => {
@@ -69,7 +81,16 @@ export function SnapshotPlayer({
       loadingRef.current = false;
       failsRef.current++;
 
-      // Try fallback stream
+      // If AI snapshot fails, fall back to go2rtc
+      if (usingAiRef.current && failsRef.current <= 3) {
+        usingAiRef.current = false;
+        failsRef.current = 0;
+        fetchFrame();
+        return;
+      }
+
+      // Try fallback go2rtc stream
+      const stream = activeStreamRef.current || candidates[0];
       if (failsRef.current === 1 && stream === candidates[0]) {
         activeStreamRef.current = candidates[1];
         fetchFrame();
@@ -83,13 +104,14 @@ export function SnapshotPlayer({
     };
 
     img.src = url;
-  }, [go2rtcUrl, cameraName, isOnline]);
+  }, [go2rtcUrl, apiUrl, cameraName, cameraId, isOnline, width]);
 
   useEffect(() => {
     mountedRef.current = true;
     failsRef.current = 0;
     activeStreamRef.current = "";
     loadingRef.current = false;
+    usingAiRef.current = !!cameraId;
 
     if (!isOnline) {
       setLoading(false);
@@ -97,17 +119,14 @@ export function SnapshotPlayer({
       return;
     }
 
-    // First frame
     fetchFrame();
-
-    // Continuous refresh
     timerRef.current = setInterval(fetchFrame, intervalMs);
 
     return () => {
       mountedRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [cameraName, isOnline, intervalMs, fetchFrame]);
+  }, [cameraName, cameraId, isOnline, intervalMs, fetchFrame]);
 
   if (!isOnline) {
     return (
