@@ -489,11 +489,13 @@ export default function CameraDetailPage() {
                 <FisheyeDewarper cameraName={streamName} isOnline={camera.is_online} />
               ) : (
                 <>
-                  <VideoPlayer
+                  <SnapshotPlayer
                     cameraName={streamName}
                     isOnline={camera.is_online}
                     className="aspect-video w-full"
-                    preferSubStream={false}
+                    intervalMs={67}
+                    width={1920}
+                    useMainStream={true}
                   />
                   {/* Zone polygons ON the video */}
                   {activeTab === "detections" && (
