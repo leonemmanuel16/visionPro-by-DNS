@@ -86,8 +86,8 @@ class BestShotSelector:
         # Spatial memory: camera → list of (bbox_center, label, timestamp)
         self._spatial_memory: dict[str, list[tuple[tuple[float, float], str, float]]] = {}
         self.SPATIAL_RADIUS_PCT = 4.0   # 4% of frame
-        self.SPATIAL_MEMORY_TTL_VEHICLE = 3600  # 1 hour for vehicles — parked cars don't re-trigger
-        self.SPATIAL_MEMORY_TTL_DEFAULT = 120   # 2 minutes for persons/animals
+        self.SPATIAL_MEMORY_TTL_VEHICLE = 86400  # 24 hours — parked cars NEVER re-trigger
+        self.SPATIAL_MEMORY_TTL_DEFAULT = 86400  # 24 hours — same for persons at same position
 
         self._frame_counter: dict[str, int] = {}
         self._last_cleanup = time.monotonic()
