@@ -86,7 +86,8 @@ class DetectorService:
         self._event_validator: EventValidator | None = None
 
         # Per-camera state (managed by _sync_cameras)
-        self.cam_streams: dict[str, str] = {}       # cam_id -> go2rtc stream name
+        self.cam_streams: dict[str, str] = {}       # cam_id -> go2rtc sub-stream name
+        self.cam_main_streams: dict[str, str] = {}  # cam_id -> go2rtc main-stream name (4MP)
         self.cam_names: dict[str, str] = {}          # cam_id -> display name
         self.cam_trackers: dict[str, ObjectTracker] = {}
         self.cam_best_shots: dict[str, BestShotSelector] = {}
@@ -215,6 +216,7 @@ class DetectorService:
                     cam_config = {}
 
             self.cam_streams[cam_id] = stream_name
+            self.cam_main_streams[cam_id] = f"cam_{cam_id_short}"  # main 4MP stream
             self.cam_names[cam_id] = cam["name"] or "unknown"
             self.cam_trackers[cam_id] = ObjectTracker(frame_rate=self.detection_fps)
             self.cam_best_shots[cam_id] = BestShotSelector(
@@ -241,6 +243,7 @@ class DetectorService:
             log.info("detector.camera_removed", camera_id=cid,
                      name=self.cam_names.get(cid))
             self.cam_streams.pop(cid, None)
+            self.cam_main_streams.pop(cid, None)
             self.cam_names.pop(cid, None)
             self.cam_trackers.pop(cid, None)
             self.cam_best_shots.pop(cid, None)
@@ -600,7 +603,7 @@ class DetectorService:
 
         loop = asyncio.get_event_loop()
         for buf, candidate in ready_events:
-            # Pre-publish quality gate
+            # Pre-publish quality gate (on sub-stream frame)
             quality = EventValidator.check_frame_quality(candidate.frame, candidate.bbox)
             if not quality["is_valid"]:
                 log.info("event.pre_publish_rejected",
@@ -608,8 +611,28 @@ class DetectorService:
                          reason=quality["reason"], tracker_id=buf.tracker_id)
                 continue
 
+            # ── Fetch 4MP frame from main-stream for high-quality snapshot ──
+            snapshot_frame = candidate.frame
+            snapshot_bbox = candidate.bbox
+            main_stream = self.cam_main_streams.get(cam_id)
+            if main_stream:
+                hires = await loop.run_in_executor(
+                    self.thread_pool, self._grabber.fetch_hires_frame, main_stream
+                )
+                if hires is not None:
+                    # Scale bbox from sub-stream coords to 4MP coords
+                    hi_h, hi_w = hires.shape[:2]
+                    lo_h, lo_w = candidate.frame.shape[:2]
+                    sx, sy = hi_w / lo_w, hi_h / lo_h
+                    ox1, oy1, ox2, oy2 = candidate.bbox
+                    snapshot_bbox = (ox1 * sx, oy1 * sy, ox2 * sx, oy2 * sy)
+                    snapshot_frame = hires
+                    log.info("alert.hires_snapshot", camera=cam_name,
+                             sub=f"{lo_w}x{lo_h}", main=f"{hi_w}x{hi_h}",
+                             label=buf.label, tracker_id=buf.tracker_id)
+
             best_det = TD(
-                bbox=candidate.bbox,
+                bbox=snapshot_bbox,
                 label=buf.label,
                 confidence=candidate.confidence,
                 class_id=buf.class_id,
@@ -625,7 +648,7 @@ class DetectorService:
                     for key in ("upper_color", "lower_color", "headgear"):
                         best_det.metadata.pop(key, None)
 
-            # Create video clip from ring buffer
+            # Create video clip from ring buffer (sub-stream resolution)
             clip_path = None
             try:
                 pre_frames = ring_buffer.get_pre_event_frames(seconds=10)
@@ -647,7 +670,7 @@ class DetectorService:
                 camera_id=cam_id,
                 camera_name=cam_name,
                 detection=best_det,
-                frame=candidate.frame,
+                frame=snapshot_frame,
                 clip_path=clip_path,
             )
 
@@ -655,8 +678,8 @@ class DetectorService:
             if event_id and self._event_validator:
                 await self._event_validator.submit(
                     event_id=event_id,
-                    frame=candidate.frame,
-                    bbox=candidate.bbox,
+                    frame=snapshot_frame,
+                    bbox=snapshot_bbox,
                     label=buf.label,
                     confidence=candidate.confidence,
                 )

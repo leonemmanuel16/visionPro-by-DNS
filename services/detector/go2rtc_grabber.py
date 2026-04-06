@@ -85,6 +85,28 @@ class Go2rtcGrabber:
                     time.sleep(2)  # backoff on repeated failures
                 continue
 
+    def fetch_hires_frame(self, stream_name: str) -> np.ndarray | None:
+        """Fetch a single full-resolution frame on demand (blocking).
+
+        Used for 4MP alert snapshots — called from thread pool executor.
+        go2rtc auto-connects to the main stream if not already active.
+        No width parameter = native resolution (4MP).
+        """
+        url = f"{self.go2rtc_url}/api/frame.jpeg?src={stream_name}"
+        try:
+            resp = urlopen(Request(url), timeout=8)
+            data = resp.read()
+            buf = np.frombuffer(data, dtype=np.uint8)
+            frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+            if frame is not None:
+                h, w = frame.shape[:2]
+                log.info("go2rtc_grabber.hires_frame", stream=stream_name,
+                         resolution=f"{w}x{h}")
+            return frame
+        except Exception as e:
+            log.warning("go2rtc_grabber.hires_error", stream=stream_name, error=str(e))
+            return None
+
     async def fetch_all(self, cameras: dict[str, str]) -> dict[str, np.ndarray]:
         """Return latest cached frames for all cameras (instant, no network wait).
 
