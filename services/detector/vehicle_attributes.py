@@ -30,11 +30,11 @@ COLOR_RANGES = [
 def _bgr_to_name(bgr: np.ndarray) -> str:
     hsv = cv2.cvtColor(np.array([[bgr]], dtype=np.uint8), cv2.COLOR_BGR2HSV)[0][0]
     h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
-    if v < 50:
+    if v < 40:
         return "negro"
-    if s < 30 and v > 200:
+    if s < 40 and v > 160:  # Relaxed: catches white cars in shadows/overcast
         return "blanco"
-    if s < 30:
+    if s < 35:
         return "gris"
     for name, h_low, h_high, s_min, v_min in COLOR_RANGES:
         if h_low <= h < h_high and s >= s_min and v >= v_min:
@@ -54,9 +54,9 @@ def _dominant_color(region: np.ndarray) -> tuple[str, tuple[int, int, int]]:
     v_channel = hsv[:, :, 2].flatten()
 
     n_pixels = len(h_channel)
-    is_black = v_channel < 50
-    is_white = (s_channel < 30) & (v_channel > 200)
-    is_gray = (s_channel < 30) & (~is_white) & (~is_black)
+    is_black = v_channel < 40
+    is_white = (s_channel < 40) & (v_channel > 160)  # Relaxed for real-world lighting
+    is_gray = (s_channel < 35) & (~is_white) & (~is_black)
     is_chromatic = ~is_black & ~is_white & ~is_gray
 
     n_black = np.count_nonzero(is_black)
@@ -285,9 +285,11 @@ def extract_vehicle_attributes(frame: np.ndarray, bbox: tuple, yolo_label: str =
     veh_w = x2 - x1
 
     # ── Color ──
-    pad_x = int(veh_w * 0.15)
-    body_y1 = y1 + int(veh_h * 0.20)
-    body_y2 = y1 + int(veh_h * 0.70)
+    # Take center 60% of the bbox to avoid edges (shadows, road, background)
+    pad_x = int(veh_w * 0.20)
+    pad_y = int(veh_h * 0.20)
+    body_y1 = y1 + pad_y
+    body_y2 = y2 - pad_y
     body_x1 = x1 + pad_x
     body_x2 = x2 - pad_x
     body_region = frame[body_y1:body_y2, body_x1:body_x2]

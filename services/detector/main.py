@@ -18,6 +18,7 @@ import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import asyncpg
+import cv2
 import redis.asyncio as aioredis
 import structlog
 
@@ -185,14 +186,10 @@ class DetectorService:
                 cam_type = (cam.get("camera_type") or "").lower()
                 is_fisheye = "fisheye" in cam_name_lower or "fish" in cam_name_lower or cam_type == "fisheye"
 
-                if self.go2rtc_url:
-                    rtsp_base = self.go2rtc_url.replace("http://", "rtsp://").replace(":1984", ":8554")
-                    # Always use sub-stream for detection (640x480 or 720p)
-                    # YOLO resizes to 640x640 anyway — full 4MP wastes CPU on resize
-                    stream_url = f"{rtsp_base}/cam_{cam_id_short}_sub"
-                else:
-                    # Prefer sub-stream for detection, fall back to main
-                    stream_url = cam["rtsp_sub_stream"] or cam["rtsp_main_stream"]
+                # Connect directly to NVR/camera RTSP (not via go2rtc)
+                # go2rtc doesn't relay HEVC properly over RTSP
+                # Main stream = full 4MP resolution for better detection
+                stream_url = cam["rtsp_main_stream"] or cam["rtsp_sub_stream"]
                 if stream_url:
                     # Load per-camera detect_classes from config
                     cam_config = cam.get("config") or {}
@@ -264,11 +261,11 @@ class DetectorService:
 
         tracker = ObjectTracker()
         best_shot = BestShotSelector(
-            min_bbox_area=1500,      # ~39x39px — sub-streams are 640x360
-            min_person_height=30,    # ~8% of 360px frame height
+            min_bbox_area=5000,      # ~70x70px — good for 4MP (2688x1520)
+            min_person_height=120,   # ~8% of 1520px frame height
             max_hold_time=3.0,       # Publish after 3s max (was 8 — too slow for fast objects)
             gone_frames=5,           # Publish 5 frames after object leaves (was 15 = 1s delay)
-            confidence_threshold=0.42,
+            confidence_threshold=0.35,  # Lower to catch animals with lower confidence
         )
         ring_buffer = RingBuffer(
             max_seconds=self.ring_buffer_seconds,
@@ -328,6 +325,8 @@ class DetectorService:
                     await asyncio.sleep(1)
                     continue
 
+                # Process at native resolution (4MP OK — YOLO resizes internally,
+                # higher res = better faces, colors, animals, snapshot quality)
                 log.debug("detector.frame_ok", camera=camera_name, shape=f"{frame.shape[1]}x{frame.shape[0]}")
 
                 # Push frame to ring buffer (for video clips)
@@ -337,6 +336,11 @@ class DetectorService:
                 detections = await self.batch_detector.submit(frame)
 
                 if not detections:
+                    # Publish empty tracking so frontend clears stale boxes
+                    import json as _json_empty
+                    await self.redis.publish("tracking", _json_empty.dumps({
+                        "camera_id": camera_id, "tracks": [], "person_count": 0,
+                    }))
                     await asyncio.sleep(frame_interval)
                     continue
 
@@ -361,6 +365,11 @@ class DetectorService:
                         if frame_count % 50 == 0:
                             log.info("pipeline.class_filter_drop", camera=camera_name,
                                      pre=pre_filter_count, allowed=list(allowed))
+                        # Publish empty tracking so frontend clears stale boxes
+                        import json as _json_empty2
+                        await self.redis.publish("tracking", _json_empty2.dumps({
+                            "camera_id": camera_id, "tracks": [], "person_count": 0,
+                        }))
                         await asyncio.sleep(frame_interval)
                         continue
 
@@ -513,58 +522,57 @@ class DetectorService:
                                 line_crossing_state[tw_id][det.tracker_id] = side
 
                 # Publish real-time tracking positions via Redis pub/sub
-                if filtered:
-                    h, w = frame.shape[:2]
-                    tracks = []
-                    for d in filtered:
-                        x1, y1, x2, y2 = d.bbox
-                        track = {
-                            "id": f"t{d.tracker_id}",
-                            "label": d.label.split(":")[0],
-                            "confidence": round(d.confidence, 2),
-                            "bbox": {
+                # ALWAYS publish — even empty list — so frontend clears stale boxes
+                h, w = frame.shape[:2]
+                tracks = []
+                for d in filtered:
+                    x1, y1, x2, y2 = d.bbox
+                    track = {
+                        "id": f"t{d.tracker_id}",
+                        "label": d.label.split(":")[0],
+                        "confidence": round(d.confidence, 2),
+                        "bbox": {
+                            "x": round(x1 / w * 100, 1),
+                            "y": round(y1 / h * 100, 1),
+                            "w": round((x2 - x1) / w * 100, 1),
+                            "h": round((y2 - y1) / h * 100, 1),
+                        },
+                        "trackId": d.tracker_id,
+                    }
+                    if hasattr(d, "metadata") and d.metadata:
+                        pname = d.metadata.get("person_name")
+                        if pname:
+                            track["personName"] = pname
+                        if d.metadata.get("face_bbox"):
+                            ft, fr, fb, fl = d.metadata["face_bbox"]
+                            track["faceBbox"] = {
                                 "x": round(x1 / w * 100, 1),
                                 "y": round(y1 / h * 100, 1),
                                 "w": round((x2 - x1) / w * 100, 1),
-                                "h": round((y2 - y1) / h * 100, 1),
-                            },
-                            "trackId": d.tracker_id,
-                        }
-                        if hasattr(d, "metadata") and d.metadata:
-                            pname = d.metadata.get("person_name")
-                            if pname:
-                                track["personName"] = pname
-                            if d.metadata.get("face_bbox"):
-                                ft, fr, fb, fl = d.metadata["face_bbox"]
-                                track["faceBbox"] = {
-                                    "x": round(x1 / w * 100, 1),
-                                    "y": round(y1 / h * 100, 1),
-                                    "w": round((x2 - x1) / w * 100, 1),
-                                    "h": round((y2 - y1) * 0.4 / h * 100, 1),
-                                }
-                        if hasattr(d, "metadata") and d.metadata:
-                            attrs = {}
-                            for attr_key in ("upper_color", "lower_color", "headgear",
-                                             "vehicle_color", "vehicle_rgb",
-                                             "vehicle_type", "license_plate"):
-                                if attr_key in d.metadata:
-                                    attrs[attr_key] = d.metadata[attr_key]
-                            if attrs:
-                                track["attributes"] = attrs
-                        tracks.append(track)
+                                "h": round((y2 - y1) * 0.4 / h * 100, 1),
+                            }
+                    if hasattr(d, "metadata") and d.metadata:
+                        attrs = {}
+                        for attr_key in ("upper_color", "lower_color", "headgear",
+                                         "vehicle_color", "vehicle_rgb",
+                                         "vehicle_type", "license_plate"):
+                            if attr_key in d.metadata:
+                                attrs[attr_key] = d.metadata[attr_key]
+                        if attrs:
+                            track["attributes"] = attrs
+                    tracks.append(track)
 
-                    # Count persons for real-time display
-                    person_count_rt = sum(1 for d in filtered if d.label.split(":")[0] == "person")
+                person_count_rt = sum(1 for d in filtered if d.label.split(":")[0] == "person")
 
-                    import json as _json
-                    await self.redis.publish(
-                        "tracking",
-                        _json.dumps({
-                            "camera_id": camera_id,
-                            "tracks": tracks,
-                            "person_count": person_count_rt,
-                        }),
-                    )
+                import json as _json
+                await self.redis.publish(
+                    "tracking",
+                    _json.dumps({
+                        "camera_id": camera_id,
+                        "tracks": tracks,
+                        "person_count": person_count_rt,
+                    }),
+                )
 
                 # ── BEST-SHOT: Feed all detections, publish nothing yet ──
                 best_shot.cleanup()

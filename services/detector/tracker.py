@@ -25,7 +25,7 @@ class ObjectTracker:
         # supervision 0.18.0 uses: track_thresh, track_buffer, match_thresh, frame_rate
         self.tracker = sv.ByteTrack(
             track_thresh=0.25,
-            track_buffer=30,
+            track_buffer=10,   # was 30 — drop lost tracks faster (2s at 5fps)
             match_thresh=0.8,
             frame_rate=5,
         )

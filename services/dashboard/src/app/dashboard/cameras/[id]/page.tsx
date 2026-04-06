@@ -210,12 +210,20 @@ export default function CameraDetailPage() {
 
   useEffect(() => {
     if (!camera) return;
+    let lastTrackingTime = 0;
     const h = (data: any) => {
-      if (data.type === "tracking" && data.camera_id === camera.id)
+      if (data.type === "tracking" && data.camera_id === camera.id) {
+        lastTrackingTime = Date.now();
         setLiveDetections(data.tracks || []);
+      }
     };
     wsClient.on("tracking", h);
-    const t = setInterval(() => setLiveDetections((p) => p.length > 0 ? [] : p), 3000);
+    // Clear stale detections: if no tracking update in 1s, clear boxes
+    const t = setInterval(() => {
+      if (Date.now() - lastTrackingTime > 1000) {
+        setLiveDetections([]);
+      }
+    }, 500);
     return () => { wsClient.off("tracking", h); clearInterval(t); };
   }, [camera]);
 
@@ -499,9 +507,9 @@ export default function CameraDetailPage() {
                       drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
                     />
                   )}
-                  {/* Detection boxes */}
-                  {camera.is_online && liveDetections.length > 0 && !isDrawing && (
-                    <DetectionOverlay detections={liveDetections} />
+                  {/* Detection boxes — always visible, z-20 above zone overlay */}
+                  {camera.is_online && liveDetections.length > 0 && (
+                    <DetectionOverlay detections={liveDetections} className="z-20" />
                   )}
                 </>
               )}

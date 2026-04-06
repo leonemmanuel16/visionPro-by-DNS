@@ -85,8 +85,9 @@ class BestShotSelector:
 
         # Spatial memory: camera → list of (bbox_center, label, timestamp)
         self._spatial_memory: dict[str, list[tuple[tuple[float, float], str, float]]] = {}
-        self.SPATIAL_RADIUS_PCT = 3.0   # 3% of frame — tighter to avoid suppressing nearby objects
-        self.SPATIAL_MEMORY_TTL = 120   # 2 minutes — was 5 min, too aggressive for active scenes
+        self.SPATIAL_RADIUS_PCT = 4.0   # 4% of frame
+        self.SPATIAL_MEMORY_TTL_VEHICLE = 3600  # 1 hour for vehicles — parked cars don't re-trigger
+        self.SPATIAL_MEMORY_TTL_DEFAULT = 120   # 2 minutes for persons/animals
 
         self._frame_counter: dict[str, int] = {}
         self._last_cleanup = time.monotonic()
@@ -114,26 +115,43 @@ class BestShotSelector:
         cy2 = min(h, y2 + pad_y)
         return frame[cy1:cy2, cx1:cx2].copy(), (cx1, cy1)
 
+    VEHICLE_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
+
+    def _spatial_ttl(self, label: str) -> float:
+        """Return spatial memory TTL based on object class."""
+        base = label.split(":")[0]
+        if base in self.VEHICLE_LABELS:
+            return self.SPATIAL_MEMORY_TTL_VEHICLE  # 1 hour — parked cars
+        return self.SPATIAL_MEMORY_TTL_DEFAULT  # 2 min — persons/animals
+
     def _is_near_published(self, camera_id: str, center: tuple[float, float],
                            frame_shape: tuple, label: str = "") -> bool:
         """Check if this position was recently published for the same class (spatial dedup).
 
         Only suppresses if the SAME class was published nearby. A person and a car
         at the same position should both generate events.
+        Vehicles use 1-hour TTL (parked cars), others use 2-minute TTL.
         """
         now = time.monotonic()
+        base_label = label.split(":")[0]
+        # Use the longest possible TTL for cleanup (vehicle TTL)
+        max_ttl = self.SPATIAL_MEMORY_TTL_VEHICLE
         memory = self._spatial_memory.get(camera_id, [])
-        memory = [(c, l, t) for c, l, t in memory if now - t < self.SPATIAL_MEMORY_TTL]
+        memory = [(c, l, t) for c, l, t in memory if now - t < max_ttl]
         self._spatial_memory[camera_id] = memory
 
-        base_label = label.split(":")[0]
         h, w = frame_shape[:2]
         threshold = self.SPATIAL_RADIUS_PCT / 100
 
-        for prev_center, prev_label, _ in memory:
+        for prev_center, prev_label, ts in memory:
+            prev_base = prev_label.split(":")[0]
             # Only suppress same class at same position
-            if prev_label.split(":")[0] != base_label:
+            if prev_base != base_label:
                 continue
+            # Check if this memory entry is still valid for this class
+            ttl = self._spatial_ttl(prev_label)
+            if now - ts >= ttl:
+                continue  # Expired for this class type
             dx = abs(center[0] - prev_center[0]) / w
             dy = abs(center[1] - prev_center[1]) / h
             if dx < threshold and dy < threshold:
@@ -310,5 +328,5 @@ class BestShotSelector:
         for cam_id in list(self._spatial_memory.keys()):
             self._spatial_memory[cam_id] = [
                 entry for entry in self._spatial_memory[cam_id]
-                if now - entry[-1] < self.SPATIAL_MEMORY_TTL
+                if now - entry[-1] < self.SPATIAL_MEMORY_TTL_VEHICLE  # use max TTL
             ]

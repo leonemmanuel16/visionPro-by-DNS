@@ -81,38 +81,65 @@ class GpuFrameGrabber:
             log.debug("gpu_grabber.probe_failed", error=str(e))
         return None
 
+    def _probe_stream_info(self) -> tuple[tuple[int, int] | None, str | None]:
+        """Single probe for both resolution and codec (avoids multiple RTSP connections)."""
+        try:
+            cmd = [
+                "ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,codec_name",
+                "-of", "csv=p=0:s=,",
+                "-rtsp_transport", "tcp",
+                "-i", self.stream_url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                parts = result.stdout.strip().split(",")
+                if len(parts) >= 3:
+                    codec = parts[0].strip().lower()
+                    w, h = int(parts[1]), int(parts[2])
+                    log.info("gpu_grabber.probed", resolution=f"{w}x{h}", codec=codec)
+                    return (w, h), codec
+        except Exception as e:
+            log.debug("gpu_grabber.probe_failed", error=str(e))
+        return None, None
+
     def _connect(self) -> bool:
         """Start FFmpeg NVDEC subprocess."""
         try:
             self._kill_process()
 
-            # Try to probe resolution first
-            resolution = self._probe_stream()
+            # Single probe for resolution + codec
+            resolution, codec = self._probe_stream_info()
             if resolution:
                 self.width, self.height = resolution
                 self.frame_size = self.width * self.height * 3
 
+            # Small delay to let RTSP connection from probe fully close
+            time.sleep(0.5)
+
             # Build FFmpeg command
-            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
 
             if self._nvdec_available:
-                cmd += ["-hwaccel", "cuda", "-c:v", "h264_cuvid"]
+                if codec == "hevc":
+                    cmd += ["-hwaccel", "cuda", "-c:v", "hevc_cuvid"]
+                else:
+                    cmd += ["-hwaccel", "cuda", "-c:v", "h264_cuvid"]
 
             cmd += [
                 "-rtsp_transport", "tcp",
                 "-i", self.stream_url,
+                "-an",
                 "-f", "rawvideo",
                 "-pix_fmt", "bgr24",
-                "-r", str(self.target_fps),
-                "-an",  # no audio
                 "pipe:1",
             ]
 
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=self.frame_size * 2,
+                stderr=subprocess.DEVNULL,
             )
 
             self.reconnect_delay = 1.0
