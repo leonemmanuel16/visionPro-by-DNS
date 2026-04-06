@@ -265,8 +265,8 @@ class DetectorService:
         best_shot = BestShotSelector(
             min_bbox_area=5000,      # ~70x70px — good for 4MP (2688x1520)
             min_person_height=120,   # ~8% of 1520px frame height
-            max_hold_time=3.0,       # Publish after 3s max (was 8 — too slow for fast objects)
-            gone_frames=5,           # Publish 5 frames after object leaves (was 15 = 1s delay)
+            max_hold_time=8.0,       # Publish after 8s max — gives time for best frame
+            gone_frames=10,          # Publish 2s after object leaves (10 frames at 5fps)
             confidence_threshold=0.35,  # Lower to catch animals with lower confidence
         )
         ring_buffer = RingBuffer(
