@@ -23,15 +23,44 @@ LOGO_PATH = ASSETS_DIR / "watermark.png"
 
 
 def _load_logo() -> np.ndarray | None:
-    """Load watermark PNG with alpha channel (cached)."""
+    """Load watermark PNG (cached). Supports both RGBA and RGB images."""
     global _logo_cache, _logo_loaded
     if _logo_loaded:
         return _logo_cache
     _logo_loaded = True
-    if LOGO_PATH.exists():
-        img = cv2.imread(str(LOGO_PATH), cv2.IMREAD_UNCHANGED)
-        if img is not None and img.shape[2] == 4:
-            _logo_cache = img
+
+    import structlog
+    log = structlog.get_logger()
+
+    if not LOGO_PATH.exists():
+        log.info("watermark.no_logo", path=str(LOGO_PATH))
+        return None
+
+    img = cv2.imread(str(LOGO_PATH), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        log.warning("watermark.logo_load_failed", path=str(LOGO_PATH))
+        return None
+
+    h, w = img.shape[:2]
+    channels = img.shape[2] if len(img.shape) == 3 else 1
+    log.info("watermark.logo_loaded", path=str(LOGO_PATH),
+             size=f"{w}x{h}", channels=channels)
+
+    if channels == 3:
+        # No alpha channel — create one from white background
+        # Convert white pixels to transparent
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, alpha = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+        img[:, :, 3] = alpha
+        log.info("watermark.alpha_generated", msg="White background converted to transparent")
+    elif channels == 4:
+        log.info("watermark.has_alpha")
+    else:
+        log.warning("watermark.unsupported_format", channels=channels)
+        return None
+
+    _logo_cache = img
     return _logo_cache
 
 
@@ -39,20 +68,20 @@ def _draw_text_watermark(frame: np.ndarray, timestamp: str) -> None:
     """Draw text-based watermark when no logo PNG is available."""
     h, w = frame.shape[:2]
 
-    # Scale font relative to frame size — bigger and bolder
+    # Scale font relative to frame size
     scale = max(w / 1920, 0.5)
-    thickness = max(int(scale * 3), 2)
-    font = cv2.FONT_HERSHEY_DUPLEX  # Cleaner, more legible font
+    thickness = max(int(scale * 2), 1)
+    font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Lines to draw
+    # Lines to draw (ASCII only — OpenCV can't render unicode)
     line1 = "INTELLIGENT VISION"
-    line2 = "— BY DNS —"
+    line2 = "BY DNS"
     line3 = timestamp
 
-    # Font sizes — much larger for readability
-    s1 = scale * 0.9
-    s2 = scale * 0.7
-    s3 = scale * 0.6
+    # Font sizes
+    s1 = scale * 0.7
+    s2 = scale * 0.5
+    s3 = scale * 0.45
 
     # Calculate text sizes
     (tw1, th1), _ = cv2.getTextSize(line1, font, s1, thickness)
@@ -60,15 +89,15 @@ def _draw_text_watermark(frame: np.ndarray, timestamp: str) -> None:
     (tw3, th3), _ = cv2.getTextSize(line3, font, s3, thickness)
 
     max_tw = max(tw1, tw2, tw3)
-    padding = int(15 * scale)
-    line_gap = int(10 * scale)
+    padding = int(12 * scale)
+    line_gap = int(8 * scale)
     total_h = th1 + th2 + th3 + line_gap * 3 + padding * 2
 
     # Position: bottom-right
     x_base = w - max_tw - padding * 3
     y_base = h - total_h
 
-    # Semi-transparent background — darker for better contrast
+    # Semi-transparent background
     overlay = frame.copy()
     cv2.rectangle(
         overlay,
@@ -77,15 +106,15 @@ def _draw_text_watermark(frame: np.ndarray, timestamp: str) -> None:
         (0, 0, 0),
         -1,
     )
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-    # Draw text with strong shadow for readability
+    # Draw text — thin shadow + clean white
     y = y_base + th1
     for text, s in [(line1, s1), (line2, s2), (line3, s3)]:
         (tw, th), _ = cv2.getTextSize(text, font, s, thickness)
         x = w - tw - padding * 2
-        # Strong shadow (offset 2px)
-        cv2.putText(frame, text, (x + 2, y + 2), font, s, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+        # Shadow
+        cv2.putText(frame, text, (x + 1, y + 1), font, s, (0, 0, 0), thickness + 1, cv2.LINE_AA)
         # White text
         cv2.putText(frame, text, (x, y), font, s, (255, 255, 255), thickness, cv2.LINE_AA)
         y += th + line_gap
