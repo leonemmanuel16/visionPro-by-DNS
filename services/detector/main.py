@@ -162,6 +162,7 @@ class DetectorService:
             secure=False,
         )
         self._face_recognizer = FaceRecognizer(self.db_pool, minio_client=minio_client)
+        self._face_recognizer.set_hires_source(self._grabber)
 
         # Initialize processing queue (deep analysis on 4MP frames)
         self._processing_queue = ProcessingQueue(

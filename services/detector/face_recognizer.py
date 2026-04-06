@@ -68,8 +68,13 @@ class FaceRecognizer:
         self._available = False
         self._recent_saves: list[tuple[np.ndarray, float]] = []  # [(embedding, timestamp)]
         self._recent_save_ttl: float = 10.0  # seconds to keep recent saves in memory
+        self._hires_grabber = None  # Go2rtcGrabber for 4MP face thumbnails
         self._init_library()
         self._ensure_bucket()
+
+    def set_hires_source(self, grabber):
+        """Set the go2rtc grabber for fetching 4MP frames when saving face thumbnails."""
+        self._hires_grabber = grabber
 
     def _init_library(self):
         """Try to import and initialize InsightFace. Falls back gracefully."""
@@ -298,27 +303,53 @@ class FaceRecognizer:
 
     def _save_face_thumbnail(
         self, frame: np.ndarray, person_bbox: tuple, face_location: tuple | None = None,
-        face_bbox_abs: tuple | None = None,
+        face_bbox_abs: tuple | None = None, camera_id: str | None = None,
     ) -> str | None:
         """Crop and save face thumbnail to MinIO. Returns object path or None.
 
+        If a hires grabber is configured, fetches 4MP from the main stream
+        and crops from that instead of the sub-stream frame.
+
         Args:
-            frame: Full BGR frame
+            frame: Full BGR frame (sub-stream, used as fallback)
             person_bbox: (x1, y1, x2, y2) of the person detection
             face_location: (top, right, bottom, left) relative to person crop (legacy)
             face_bbox_abs: (x1, y1, x2, y2) in absolute frame coordinates (takes priority)
+            camera_id: Camera UUID for fetching 4MP main stream
         """
         if not self.minio:
             return None
         try:
-            x1, y1, x2, y2 = [int(c) for c in person_bbox]
-            h, w = frame.shape[:2]
+            # Try to get 4MP frame for high-quality thumbnail
+            use_frame = frame
+            scale_x, scale_y = 1.0, 1.0
+            if camera_id and self._hires_grabber:
+                cam_short = camera_id.replace("-", "")[:12]
+                main_stream = f"cam_{cam_short}"
+                hires = self._hires_grabber.fetch_hires_frame(main_stream)
+                if hires is not None:
+                    hi_h, hi_w = hires.shape[:2]
+                    lo_h, lo_w = frame.shape[:2]
+                    scale_x = hi_w / lo_w
+                    scale_y = hi_h / lo_h
+                    use_frame = hires
+                    log.debug("face_recognizer.using_hires", resolution=f"{hi_w}x{hi_h}")
+
+            h, w = use_frame.shape[:2]
+
+            # Scale bboxes to hires coordinates
+            x1 = int(person_bbox[0] * scale_x)
+            y1 = int(person_bbox[1] * scale_y)
+            x2 = int(person_bbox[2] * scale_x)
+            y2 = int(person_bbox[3] * scale_y)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
 
             if face_bbox_abs:
-                # Absolute frame coordinates (x1, y1, x2, y2)
-                fx1, fy1, fx2, fy2 = [int(c) for c in face_bbox_abs]
+                fx1 = int(face_bbox_abs[0] * scale_x)
+                fy1 = int(face_bbox_abs[1] * scale_y)
+                fx2 = int(face_bbox_abs[2] * scale_x)
+                fy2 = int(face_bbox_abs[3] * scale_y)
                 face_h = fy2 - fy1
                 face_w = fx2 - fx1
                 if face_h < 30 or face_w < 30:
@@ -326,13 +357,15 @@ class FaceRecognizer:
                     return None
                 pad_h = int(face_h * 0.5)
                 pad_w = int(face_w * 0.5)
-                crop = frame[
+                crop = use_frame[
                     max(0, fy1 - pad_h): min(h, fy2 + pad_h),
                     max(0, fx1 - pad_w): min(w, fx2 + pad_w),
                 ]
             elif face_location:
-                # face_location is (top, right, bottom, left) relative to person crop
-                ft, fr, fb, fl = face_location
+                ft = int(face_location[0] * scale_y)
+                fr = int(face_location[1] * scale_x)
+                fb = int(face_location[2] * scale_y)
+                fl = int(face_location[3] * scale_x)
                 face_h = fb - ft
                 face_w = fr - fl
                 if face_h < 30 or face_w < 30:
@@ -340,20 +373,19 @@ class FaceRecognizer:
                     return None
                 pad_h = int(face_h * 0.5)
                 pad_w = int(face_w * 0.5)
-                crop = frame[
+                crop = use_frame[
                     max(0, y1 + ft - pad_h): min(h, y1 + fb + pad_h),
                     max(0, x1 + fl - pad_w): min(w, x1 + fr + pad_w),
                 ]
             else:
                 head_h = int((y2 - y1) * 0.4)
-                crop = frame[y1: y1 + head_h, x1: x2]
+                crop = use_frame[y1: y1 + head_h, x1: x2]
 
             if crop.size == 0:
                 return None
 
-            crop = cv2.resize(crop, (150, 150))
-
-            _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # Save face crop at native resolution (no resize to 150x150)
+            _, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
             data = buffer.tobytes()
 
             now = datetime.now(timezone.utc)
@@ -364,9 +396,9 @@ class FaceRecognizer:
                 content_type="image/jpeg",
             )
 
-            # Also save full snapshot for context
+            # Also save full snapshot for context (4MP if available)
             try:
-                _, full_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                _, full_buf = cv2.imencode(".jpg", use_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 full_data = full_buf.tobytes()
                 full_name = f"unknown/{now.strftime('%Y%m%d')}/{file_id}_full.jpg"
                 self.minio.put_object(
@@ -524,7 +556,7 @@ class FaceRecognizer:
             # Save thumbnail image
             thumbnail_path = ""
             if frame is not None and person_bbox is not None:
-                path = self._save_face_thumbnail(frame, person_bbox, face_location, face_bbox_abs=face_bbox_abs)
+                path = self._save_face_thumbnail(frame, person_bbox, face_location, face_bbox_abs=face_bbox_abs, camera_id=camera_id)
                 if path:
                     thumbnail_path = path
 
