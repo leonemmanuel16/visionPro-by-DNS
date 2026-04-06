@@ -63,7 +63,7 @@ class DetectorService:
         self.minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
         self.model_name = os.environ.get("MODEL_NAME", "yolo26s")
         self.detection_fps = int(os.environ.get("DETECTION_FPS", "5"))
-        self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.40"))
+        self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.15"))
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
         self.device = os.environ.get("DEVICE", "auto")
         self.ring_buffer_seconds = int(os.environ.get("RING_BUFFER_SECONDS", "15"))
@@ -267,7 +267,7 @@ class DetectorService:
             min_person_height=120,   # ~8% of 1520px frame height
             max_hold_time=8.0,       # Publish after 8s max — gives time for best frame
             gone_frames=10,          # Publish 2s after object leaves (10 frames at 5fps)
-            confidence_threshold=0.35,  # Lower to catch animals with lower confidence
+            confidence_threshold=0.15,  # Low threshold to detect indoor persons/animals
         )
         ring_buffer = RingBuffer(
             max_seconds=self.ring_buffer_seconds,
@@ -392,7 +392,7 @@ class DetectorService:
                 frame_count += 1
 
                 # ── DIAGNOSTIC: Log pipeline stages every ~10 seconds ──
-                if frame_count % (self.detection_fps * 10) == 1:
+                if frame_count % self.detection_fps == 1:  # Diag every 1 second
                     active_bufs = len([k for k in best_shot._buffers if k.startswith(camera_id)])
                     published_count = len([k for k in best_shot._published if k.startswith(camera_id)])
                     log.info("pipeline.diag", camera=camera_name,
