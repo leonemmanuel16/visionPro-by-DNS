@@ -6,6 +6,10 @@ interface PersonAttributes {
   lower_color: string;
   lower_rgb: number[];
   headgear: string;
+  vehicle_color?: string;
+  vehicle_rgb?: number[];
+  vehicle_type?: string;
+  license_plate?: string;
 }
 
 interface Detection {
@@ -32,12 +36,23 @@ const HEADGEAR_ICONS: Record<string, string> = {
 };
 
 const LABEL_COLORS: Record<string, { border: string; bg: string; text: string }> = {
-  person: { border: "#22c55e", bg: "rgba(34,197,94,0.15)", text: "#16a34a" },
-  face: { border: "#3b82f6", bg: "rgba(59,130,246,0.15)", text: "#2563eb" },
+  // Personas
+  person: { border: "#3b82f6", bg: "rgba(59,130,246,0.15)", text: "#2563eb" },
+  face: { border: "#06b6d4", bg: "rgba(6,182,212,0.15)", text: "#0891b2" },
+  // Vehiculos
   car: { border: "#f59e0b", bg: "rgba(245,158,11,0.15)", text: "#d97706" },
   truck: { border: "#f97316", bg: "rgba(249,115,22,0.15)", text: "#ea580c" },
+  bus: { border: "#ef4444", bg: "rgba(239,68,68,0.15)", text: "#dc2626" },
+  motorcycle: { border: "#e11d48", bg: "rgba(225,29,72,0.15)", text: "#be123c" },
+  bicycle: { border: "#14b8a6", bg: "rgba(20,184,166,0.15)", text: "#0d9488" },
+  // Animales
   dog: { border: "#a855f7", bg: "rgba(168,85,247,0.15)", text: "#9333ea" },
   cat: { border: "#ec4899", bg: "rgba(236,72,153,0.15)", text: "#db2777" },
+  horse: { border: "#f43f5e", bg: "rgba(244,63,94,0.15)", text: "#e11d48" },
+  bird: { border: "#8b5cf6", bg: "rgba(139,92,246,0.15)", text: "#7c3aed" },
+  cow: { border: "#d946ef", bg: "rgba(217,70,239,0.15)", text: "#c026d3" },
+  sheep: { border: "#c084fc", bg: "rgba(192,132,252,0.15)", text: "#a855f7" },
+  bear: { border: "#b91c1c", bg: "rgba(185,28,28,0.15)", text: "#991b1b" },
   default: { border: "#6b7280", bg: "rgba(107,114,128,0.15)", text: "#4b5563" },
 };
 
@@ -135,7 +150,7 @@ export function DetectionOverlay({
               </div>
             )}
 
-            {/* Bottom label: clothing colors */}
+            {/* Bottom label: clothing colors (persons) */}
             {attrs && attrs.upper_rgb && attrs.lower_rgb && (attrs.upper_color !== "desconocido" || attrs.lower_color !== "desconocido") && (
               <div
                 className="absolute left-0 flex items-center gap-1 px-1.5 py-0.5 rounded-t-sm"
@@ -145,7 +160,6 @@ export function DetectionOverlay({
                   maxWidth: "250%",
                 }}
               >
-                {/* Upper body color dot */}
                 <div
                   className="w-2.5 h-2.5 rounded-full border border-white/40"
                   style={{ backgroundColor: `rgb(${attrs.upper_rgb.join(",")})` }}
@@ -153,13 +167,42 @@ export function DetectionOverlay({
                 />
                 <span className="text-[9px] text-white/80">{attrs.upper_color}</span>
                 <span className="text-[8px] text-white/40">|</span>
-                {/* Lower body color dot */}
                 <div
                   className="w-2.5 h-2.5 rounded-full border border-white/40"
                   style={{ backgroundColor: `rgb(${attrs.lower_rgb.join(",")})` }}
                   title={`Inferior: ${attrs.lower_color}`}
                 />
                 <span className="text-[9px] text-white/80">{attrs.lower_color}</span>
+              </div>
+            )}
+
+            {/* Bottom label: vehicle attributes */}
+            {attrs && attrs.vehicle_type && attrs.vehicle_color && (
+              <div
+                className="absolute left-0 flex items-center gap-1 px-1.5 py-0.5 rounded-t-sm"
+                style={{
+                  top: "100%",
+                  backgroundColor: "rgba(0,0,0,0.7)",
+                  maxWidth: "300%",
+                }}
+              >
+                {attrs.vehicle_rgb && (
+                  <div
+                    className="w-2.5 h-2.5 rounded-full border border-white/40"
+                    style={{ backgroundColor: `rgb(${attrs.vehicle_rgb.join(",")})` }}
+                  />
+                )}
+                <span className="text-[9px] text-white/80">
+                  {attrs.vehicle_type} {attrs.vehicle_color}
+                </span>
+                {attrs.license_plate && (
+                  <>
+                    <span className="text-[8px] text-white/40">|</span>
+                    <span className="text-[9px] font-bold text-yellow-300">
+                      {attrs.license_plate}
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </div>
