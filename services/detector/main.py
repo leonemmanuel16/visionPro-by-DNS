@@ -657,14 +657,15 @@ class DetectorService:
                     for key in ("upper_color", "lower_color", "headgear"):
                         best_det.metadata.pop(key, None)
 
-            # Create video clip from ring buffer (sub-stream resolution)
+            # Create video clip from ring buffer (up to 15s, actual fps)
             clip_path = None
             try:
-                pre_frames = ring_buffer.get_pre_event_frames(seconds=10)
+                pre_frames = ring_buffer.get_pre_event_frames(seconds=15)
+                actual_fps = max(1, int(round(ring_buffer.get_actual_fps())))
                 if len(pre_frames) >= 5:
                     clip_bytes = await loop.run_in_executor(
                         self.thread_pool,
-                        create_clip, pre_frames, [], self.detection_fps
+                        create_clip, pre_frames, [], actual_fps
                     )
                     if clip_bytes:
                         ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

@@ -39,7 +39,7 @@ class RingBuffer:
         except Exception:
             pass  # Don't crash the detection loop for ring buffer issues
 
-    def get_pre_event_frames(self, seconds: int = 10) -> list[np.ndarray]:
+    def get_pre_event_frames(self, seconds: int = 15) -> list[np.ndarray]:
         """Get the last N seconds of frames (decoded)."""
         if not self.frames:
             return []
@@ -56,6 +56,17 @@ class RingBuffer:
                 if frame is not None:
                     result.append(frame)
         return result
+
+    def get_actual_fps(self) -> float:
+        """Calculate actual FPS from frame timestamps (avoids speed-up in clips)."""
+        if len(self.frames) < 2:
+            return float(self.fps)
+        oldest_ts = self.frames[0][1]
+        newest_ts = self.frames[-1][1]
+        duration = newest_ts - oldest_ts
+        if duration <= 0:
+            return float(self.fps)
+        return len(self.frames) / duration
 
     def frame_count(self) -> int:
         return len(self.frames)
