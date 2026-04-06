@@ -1,19 +1,18 @@
-"""Go2RTC Frame Grabber — Fetches JPEG snapshots from go2rtc HTTP API.
+"""Go2RTC Frame Grabber — Background threads fetch JPEG snapshots continuously.
 
-Replaces 18 direct RTSP connections to the NVR.  go2rtc already maintains
-the sub-stream connections, so we just request JPEG frames via HTTP.
+Each camera gets its own thread that loops fetching frames from go2rtc.
+The mosaic loop reads the latest cached frame instantly (no network wait).
 
-Benefits over direct RTSP:
-  - 0 extra RTSP connections (go2rtc already has them)
-  - 0 H.265 decoding in the detector (go2rtc decodes)
-  - Frames arrive pre-decoded as JPEG — just imdecode to numpy
-  - Parallel HTTP fetch of all 18 cameras in ~30-50ms on localhost
+This solves the 1.9s fetch bottleneck: go2rtc's frame.jpeg waits for the
+next keyframe (~100-500ms per request), but with background threads each
+camera fetches independently and the detection loop is never blocked.
 """
 
-import asyncio
+import threading
+import time
+from urllib.request import urlopen, Request
 
 import cv2
-import httpx
 import numpy as np
 import structlog
 
@@ -21,63 +20,92 @@ log = structlog.get_logger()
 
 
 class Go2rtcGrabber:
-    """Fetches JPEG frames from go2rtc for all cameras in parallel."""
+    """Fetches JPEG frames from go2rtc using background threads per camera."""
 
     def __init__(self, go2rtc_url: str = "http://localhost:1984", width: int = 640):
         self.go2rtc_url = go2rtc_url.rstrip("/")
         self.width = width
-        self._client: httpx.AsyncClient | None = None
+        self._running = False
+        self._threads: dict[str, threading.Thread] = {}
+        self._latest: dict[str, np.ndarray] = {}  # cam_id -> latest frame
+        self._lock = threading.Lock()
 
     async def start(self):
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(5.0, connect=3.0),
-            limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
-        )
+        self._running = True
         log.info("go2rtc_grabber.started", url=self.go2rtc_url, width=self.width)
 
     async def stop(self):
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        self._running = False
+        for t in self._threads.values():
+            t.join(timeout=3)
+        self._threads.clear()
+        self._latest.clear()
 
-    async def fetch_frame(self, stream_name: str) -> np.ndarray | None:
-        """Fetch a single JPEG frame from go2rtc and decode to BGR numpy array."""
-        try:
-            url = f"{self.go2rtc_url}/api/frame.jpeg?src={stream_name}&width={self.width}"
-            resp = await self._client.get(url)
-            if resp.status_code != 200:
-                return None
-            buf = np.frombuffer(resp.content, dtype=np.uint8)
-            frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-            return frame
-        except Exception as e:
-            log.debug("go2rtc_grabber.fetch_error", stream=stream_name, error=str(e))
-            return None
+    def start_camera(self, cam_id: str, stream_name: str):
+        """Start a background fetch thread for a camera."""
+        if cam_id in self._threads and self._threads[cam_id].is_alive():
+            return
+        t = threading.Thread(
+            target=self._fetch_loop,
+            args=(cam_id, stream_name),
+            daemon=True,
+            name=f"grab-{cam_id[:8]}",
+        )
+        t.start()
+        self._threads[cam_id] = t
+
+    def stop_camera(self, cam_id: str):
+        """Stop the background thread for a camera."""
+        self._threads.pop(cam_id, None)
+        with self._lock:
+            self._latest.pop(cam_id, None)
+
+    def _fetch_loop(self, cam_id: str, stream_name: str):
+        """Background thread: continuously fetch JPEG frames from go2rtc."""
+        url = f"{self.go2rtc_url}/api/frame.jpeg?src={stream_name}&width={self.width}"
+        fails = 0
+        while self._running and cam_id in self._threads:
+            try:
+                req = Request(url)
+                resp = urlopen(req, timeout=3)
+                data = resp.read()
+                buf = np.frombuffer(data, dtype=np.uint8)
+                frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    with self._lock:
+                        self._latest[cam_id] = frame
+                    fails = 0
+                else:
+                    fails += 1
+            except Exception:
+                fails += 1
+                if fails <= 3:
+                    time.sleep(0.5)
+                else:
+                    time.sleep(2)  # backoff on repeated failures
+                continue
 
     async def fetch_all(self, cameras: dict[str, str]) -> dict[str, np.ndarray]:
-        """Fetch frames from all cameras in parallel.
+        """Return latest cached frames for all cameras (instant, no network wait).
+
+        Also starts background threads for any new cameras.
 
         Args:
             cameras: dict mapping camera_id -> go2rtc stream name
-                     e.g. {"uuid-1": "cam_abc123def456_sub", ...}
 
         Returns:
-            dict of camera_id -> BGR numpy array (only successful fetches)
+            dict of camera_id -> BGR numpy array
         """
-        if not cameras:
-            return {}
+        # Start threads for new cameras
+        for cam_id, stream_name in cameras.items():
+            if cam_id not in self._threads or not self._threads[cam_id].is_alive():
+                self.start_camera(cam_id, stream_name)
 
-        cam_ids = list(cameras.keys())
-        stream_names = [cameras[cid] for cid in cam_ids]
+        # Stop threads for removed cameras
+        removed = [cid for cid in self._threads if cid not in cameras]
+        for cid in removed:
+            self.stop_camera(cid)
 
-        results = await asyncio.gather(
-            *(self.fetch_frame(name) for name in stream_names),
-            return_exceptions=True,
-        )
-
-        frames: dict[str, np.ndarray] = {}
-        for cam_id, result in zip(cam_ids, results):
-            if isinstance(result, np.ndarray) and result is not None:
-                frames[cam_id] = result
-
-        return frames
+        # Return latest frames (instant copy)
+        with self._lock:
+            return {cid: frame for cid, frame in self._latest.items() if cid in cameras}
