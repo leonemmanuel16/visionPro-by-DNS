@@ -97,6 +97,7 @@ class DetectorService:
         self.cam_zones: dict[str, list] = {}
         self.cam_detect_classes: dict[str, list | None] = {}
         self.cam_line_crossing: dict[str, dict] = {}
+        self.cam_line_counters: dict[str, dict[str, dict[str, int]]] = {}  # cam_id -> {tw_id -> {"A→B": n, "B→A": n}}
 
     # ── YOLO label -> UI detection class mapping ──
     YOLO_TO_CLASS = {
@@ -243,6 +244,7 @@ class DetectorService:
             self.cam_zones[cam_id] = await self._zone_manager.get_zones(cam_id)
             self.cam_detect_classes[cam_id] = cam_config.get("detect_classes", None)
             self.cam_line_crossing[cam_id] = {}
+            self.cam_line_counters[cam_id] = {}
 
             log.info("detector.camera_added", camera_id=cam_id,
                      name=cam["name"], stream=stream_name)
@@ -261,6 +263,7 @@ class DetectorService:
             self.cam_zones.pop(cid, None)
             self.cam_detect_classes.pop(cid, None)
             self.cam_line_crossing.pop(cid, None)
+            self.cam_line_counters.pop(cid, None)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Main Mosaic Detection Loop
@@ -507,14 +510,17 @@ class DetectorService:
                 except Exception as e:
                     log.debug("person_count.error", error=str(e))
 
-        # ── Line crossing (tripwire zones) ──
+        # ── Line crossing (tripwire zones) with counters ──
         if detect_classes and "line_crossing" in detect_classes and zones:
             lc_state = self.cam_line_crossing.setdefault(cam_id, {})
+            lc_counters = self.cam_line_counters.setdefault(cam_id, {})
             tripwires = [z for z in zones if z.get("zone_type") == "tripwire"]
             for tw in tripwires:
                 tw_id = str(tw.get("id", ""))
                 if tw_id not in lc_state:
                     lc_state[tw_id] = {}
+                if tw_id not in lc_counters:
+                    lc_counters[tw_id] = {"A→B": 0, "B→A": 0}
                 points = tw.get("points", [])
                 if len(points) >= 2:
                     p1, p2 = points[0], points[1]
@@ -529,7 +535,9 @@ class DetectorService:
                         side = "A" if cross > 0 else "B"
                         prev_side = lc_state[tw_id].get(det.tracker_id)
                         if prev_side and prev_side != side:
-                            direction = f"{prev_side}\u2192{side}"
+                            direction = f"{prev_side}→{side}"
+                            # Increment crossing counter
+                            lc_counters[tw_id][direction] = lc_counters[tw_id].get(direction, 0) + 1
                             if det.metadata is None:
                                 det.metadata = {}
                             det.metadata["line_crossing"] = True
@@ -537,7 +545,9 @@ class DetectorService:
                             det.metadata["tripwire_id"] = tw_id
                             log.info("line_crossing.detected",
                                      camera=cam_name, tracker_id=det.tracker_id,
-                                     label=det.label, direction=direction)
+                                     label=det.label, direction=direction,
+                                     count_ab=lc_counters[tw_id].get("A→B", 0),
+                                     count_ba=lc_counters[tw_id].get("B→A", 0))
                         lc_state[tw_id][det.tracker_id] = side
 
         # ── Publish real-time tracking (ALL tracked, not zone-filtered) ──
@@ -581,14 +591,17 @@ class DetectorService:
 
         person_count_rt = sum(1 for d in tracked if d.label.split(":")[0] == "person")
 
-        await self.redis.publish(
-            "tracking",
-            json.dumps({
-                "camera_id": cam_id,
-                "tracks": tracks,
-                "person_count": person_count_rt,
-            }),
-        )
+        tracking_msg = {
+            "camera_id": cam_id,
+            "tracks": tracks,
+            "person_count": person_count_rt,
+        }
+        # Include line crossing counters if any
+        lc_counters = self.cam_line_counters.get(cam_id)
+        if lc_counters:
+            tracking_msg["line_counts"] = lc_counters
+
+        await self.redis.publish("tracking", json.dumps(tracking_msg))
 
         # ── Best-shot: feed zone-filtered detections ──
         best_shot.cleanup()

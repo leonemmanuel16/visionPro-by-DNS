@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { SnapshotPlayer } from "@/components/SnapshotPlayer";
@@ -113,8 +113,26 @@ export default function CameraDetailPage() {
   });
 
   const [liveDetections, setLiveDetections] = useState<any[]>([]);
+  const [lineCounts, setLineCounts] = useState<Record<string, Record<string, number>>>({});
   const EVENT_COOLDOWN = 30;
   const [saved, setSaved] = useState(false);
+
+  // Debounced ISAPI image settings
+  const imageTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const applyImageToCamera = useCallback((settings: typeof imageSettings) => {
+    if (!id) return;
+    if (imageTimerRef.current) clearTimeout(imageTimerRef.current);
+    imageTimerRef.current = setTimeout(async () => {
+      try {
+        await api.put(`/cameras/${id}/image`, {
+          brightness: settings.brightness,
+          contrast: settings.contrast,
+          saturation: settings.saturation,
+          sharpness: settings.sharpness,
+        });
+      } catch (_e) { /* silent — camera may not support ISAPI */ }
+    }, 300);
+  }, [id]);
 
   // Camera edit fields
   const [editName, setEditName] = useState("");
@@ -216,6 +234,7 @@ export default function CameraDetailPage() {
       if (data.type === "tracking" && data.camera_id === camera.id) {
         lastTrackingTime = Date.now();
         setLiveDetections(data.tracks || []);
+        if (data.line_counts) setLineCounts(data.line_counts);
       }
     };
     wsClient.on("tracking", h);
@@ -497,16 +516,35 @@ export default function CameraDetailPage() {
                     width={1920}
                     useMainStream={true}
                   />
-                  {/* Zone polygons ON the video */}
-                  {activeTab === "detections" && (
+                  {/* Zone polygons ON the video — visible on detections tab (editable) and live tab (read-only) */}
+                  {(activeTab === "detections" || activeTab === "live") && allZonePolygons.length > 0 && (
                     <ZoneOverlay
                       zones={allZonePolygons}
-                      isDrawing={isDrawing}
-                      currentPoints={drawingPoints}
-                      onAddPoint={(p) => setDrawingPoints((prev) => [...prev, p])}
+                      isDrawing={activeTab === "detections" && isDrawing}
+                      currentPoints={activeTab === "detections" ? drawingPoints : []}
+                      onAddPoint={(p) => activeTab === "detections" && setDrawingPoints((prev) => [...prev, p])}
                       drawColor={drawColor}
                       drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
                     />
+                  )}
+                  {/* Line crossing counters overlay */}
+                  {activeTab === "live" && Object.keys(lineCounts).length > 0 && (
+                    <div className="absolute top-2 right-2 z-30 space-y-1">
+                      {Object.entries(lineCounts).map(([twId, dirs]) => {
+                        const zone = allZonePolygons.find(z => z.id === twId);
+                        const name = zone?.name || "Linea";
+                        const aToB = dirs["A→B"] || 0;
+                        const bToA = dirs["B→A"] || 0;
+                        return (
+                          <div key={twId} className="bg-black/75 backdrop-blur rounded-lg px-3 py-1.5 text-white text-xs font-medium flex items-center gap-3">
+                            <span className="text-blue-300">{name}</span>
+                            <span>A→B: <span className="text-green-400 font-bold">{aToB}</span></span>
+                            <span>B→A: <span className="text-yellow-400 font-bold">{bToA}</span></span>
+                            <span className="text-white/60">Total: {aToB + bToA}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                   {/* Detection boxes — always visible, z-20 above zone overlay */}
                   {camera.is_online && liveDetections.length > 0 && (
@@ -905,7 +943,11 @@ export default function CameraDetailPage() {
                       <span className="text-gray-700">{label}</span><span className="font-medium">{(imageSettings as any)[key]}%</span>
                     </div>
                     <input type="range" min="0" max="100" value={(imageSettings as any)[key]}
-                      onChange={(e) => setImageSettings({ ...imageSettings, [key]: parseInt(e.target.value) })}
+                      onChange={(e) => {
+                        const next = { ...imageSettings, [key]: parseInt(e.target.value) };
+                        setImageSettings(next);
+                        applyImageToCamera(next);
+                      }}
                       className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                   </div>
                 ))}
