@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useCameras } from "@/hooks/useCameras";
 import { Header } from "@/components/Header";
 import { SnapshotPlayer } from "@/components/SnapshotPlayer";
 import { VideoPlayer } from "@/components/VideoPlayer";
@@ -39,6 +40,12 @@ import {
   PenTool,
   ArrowLeftRight,
   Users,
+  ChevronDown,
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 
 interface CameraDetail {
@@ -146,6 +153,55 @@ export default function CameraDetailPage() {
   const [editModel, setEditModel] = useState("");
   const [editCameraType, setEditCameraType] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [showCameraSwitcher, setShowCameraSwitcher] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const { cameras: allCameras } = useCameras();
+  const switcherRef = useRef<HTMLDivElement>(null);
+
+  // Track initial state for dirty detection
+  const initialStateRef = useRef<string>("");
+
+  // Mark dirty on any settings change
+  const markDirty = useCallback(() => setIsDirty(true), []);
+
+  // Close camera switcher on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) {
+        setShowCameraSwitcher(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // Warn on browser navigation (close tab, refresh) with unsaved changes
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  // Navigate to another camera with unsaved changes check
+  const navigateToCamera = useCallback((camId: string) => {
+    if (isDirty) {
+      if (!confirm("Tienes cambios sin guardar. Deseas salir sin guardar?")) return;
+    }
+    setIsDirty(false);
+    setShowCameraSwitcher(false);
+    router.push(`/dashboard/cameras/${camId}`);
+  }, [isDirty, router]);
+
+  // Back button with unsaved changes check
+  const handleBack = useCallback(() => {
+    if (isDirty) {
+      if (!confirm("Tienes cambios sin guardar. Deseas salir sin guardar?")) return;
+    }
+    router.push("/dashboard/cameras");
+  }, [isDirty, router]);
 
   const CAMERA_TYPES = [
     { value: "domo", label: "Domo" }, { value: "bala", label: "Bala (Bullet)" },
@@ -267,6 +323,7 @@ export default function CameraDetailPage() {
 
   // ── Toggle detection ──
   const toggleDetection = (detId: string) => {
+    markDirty();
     const wasEnabled = enabledDetections.includes(detId);
     setEnabledDetections((prev) => {
       let next = wasEnabled ? prev.filter((d) => d !== detId) : [...prev, detId];
@@ -310,6 +367,7 @@ export default function CameraDetailPage() {
   const saveCurrentZone = () => {
     const minPts = selectedDetection === "line_crossing" ? 2 : 3;
     if (!selectedDetection || drawingPoints.length < minPts) return;
+    markDirty();
     const existing = detZones[selectedDetection]?.zones || [];
     if (existing.length >= MAX_ZONES_PER_DET) return;
     const newZone: any = {
@@ -329,6 +387,7 @@ export default function CameraDetailPage() {
   };
 
   const deleteZone = (detId: string, zoneId: string) => {
+    markDirty();
     setDetZones((prev) => {
       const zones = (prev[detId]?.zones || []).filter((z) => z.id !== zoneId);
       return { ...prev, [detId]: { zones } };
@@ -397,6 +456,7 @@ export default function CameraDetailPage() {
       });
     } catch (_e) {}
 
+    setIsDirty(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -481,294 +541,219 @@ export default function CameraDetailPage() {
 
   const drawColor = selectedDef ? getZoneColor(allZonePolygons.length).stroke : "#2563eb";
 
+  // Sort cameras: current first, then alphabetical
+  const sortedCameras = useMemo(() => {
+    return [...allCameras].sort((a, b) => {
+      if (a.id === id) return -1;
+      if (b.id === id) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [allCameras, id]);
+
+  // Find current camera index for prev/next
+  const currentCamIndex = sortedCameras.findIndex(c => c.id === id);
+
   return (
     <>
-      <Header title={camera.name} />
-      <div className="p-6 space-y-6">
-        {/* Top bar */}
+      {/* ── Compact top bar ── */}
+      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 px-4 py-2">
         <div className="flex items-center justify-between">
-          <button onClick={() => router.push("/dashboard/cameras")} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-            <ArrowLeft className="h-4 w-4" /> Volver a camaras
-          </button>
-          <div className="flex items-center gap-2">
-            {saved && <span className="text-xs text-green-600 font-medium">Guardado</span>}
-            <Button size="sm" onClick={handleSaveSettings}>
-              <Save className="h-4 w-4 mr-1" /> Guardar Config
-            </Button>
-            <Button size="sm" variant="outline" className="text-red-600 hover:bg-red-50" onClick={handleDelete}>
-              <Trash2 className="h-4 w-4 mr-1" /> Eliminar
-            </Button>
-          </div>
-        </div>
+          {/* Left: back + camera switcher */}
+          <div className="flex items-center gap-3">
+            <button onClick={handleBack} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-700" title="Volver a camaras">
+              <ArrowLeft className="h-4 w-4" />
+            </button>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* Video + zone overlay */}
-          <div className="lg:col-span-2">
-            <div className="relative rounded-lg overflow-hidden border border-gray-200">
-              {camera.camera_type === "fisheye" ? (
-                <FisheyeDewarper cameraName={streamName} isOnline={camera.is_online} />
-              ) : (
-                <>
-                  <SnapshotPlayer
-                    cameraName={streamName}
-                    isOnline={camera.is_online}
-                    className="aspect-video w-full"
-                    intervalMs={67}
-                    width={1920}
-                    useMainStream={true}
-                  />
-                  {/* Zone polygons ON the video — visible on detections tab (editable) and live tab (read-only) */}
-                  {(activeTab === "detections" || activeTab === "live") && allZonePolygons.length > 0 && (
-                    <ZoneOverlay
-                      zones={allZonePolygons}
-                      isDrawing={activeTab === "detections" && isDrawing}
-                      currentPoints={activeTab === "detections" ? drawingPoints : []}
-                      onAddPoint={(p) => activeTab === "detections" && setDrawingPoints((prev) => [...prev, p])}
-                      drawColor={drawColor}
-                      drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
-                    />
-                  )}
-                  {/* Line crossing counters overlay */}
-                  {activeTab === "live" && Object.keys(lineCounts).length > 0 && (
-                    <div className="absolute top-2 right-2 z-30 space-y-1">
-                      {Object.entries(lineCounts).map(([twId, dirs]) => {
-                        const zone = allZonePolygons.find(z => z.id === twId);
-                        const name = zone?.name || "Linea";
-                        const aToB = dirs["A→B"] || 0;
-                        const bToA = dirs["B→A"] || 0;
-                        return (
-                          <div key={twId} className="bg-black/75 backdrop-blur rounded-lg px-3 py-1.5 text-white text-xs font-medium flex items-center gap-3">
-                            <span className="text-blue-300">{name}</span>
-                            <span>A→B: <span className="text-green-400 font-bold">{aToB}</span></span>
-                            <span>B→A: <span className="text-yellow-400 font-bold">{bToA}</span></span>
-                            <span className="text-white/60">Total: {aToB + bToA}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {/* Detection boxes — always visible, z-20 above zone overlay */}
-                  {camera.is_online && liveDetections.length > 0 && (
-                    <DetectionOverlay detections={liveDetections} className="z-20" />
-                  )}
-                </>
-              )}
+            {/* Camera switcher dropdown */}
+            <div ref={switcherRef} className="relative">
+              <button
+                onClick={() => setShowCameraSwitcher(!showCameraSwitcher)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors min-w-[200px]"
+              >
+                <div className={`w-2 h-2 rounded-full ${camera.is_online ? "bg-green-500" : "bg-red-400"}`} />
+                <span className="text-sm font-medium text-gray-900 truncate">{camera.name}</span>
+                <ChevronDown className={`h-4 w-4 text-gray-400 ml-auto transition-transform ${showCameraSwitcher ? "rotate-180" : ""}`} />
+              </button>
 
-              {/* Drawing toolbar on video */}
-              {isDrawing && (
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/70 rounded-lg px-4 py-2 backdrop-blur">
-                  <span className="text-white text-xs font-medium">{drawingPoints.length} puntos</span>
-                  <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
-                    onClick={() => setDrawingPoints((p) => p.slice(0, -1))} disabled={drawingPoints.length === 0}>
-                    <Undo className="h-3 w-3 mr-1" /> Deshacer
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
-                    onClick={cancelDrawing}>
-                    <XCircle className="h-3 w-3 mr-1" /> Cancelar
-                  </Button>
-                  <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700"
-                    onClick={saveCurrentZone} disabled={drawingPoints.length < (selectedDetection === "line_crossing" ? 2 : 3)}>
-                    <Save className="h-3 w-3 mr-1" /> {selectedDetection === "line_crossing" ? "Guardar Linea" : "Guardar Zona"}
-                  </Button>
+              {showCameraSwitcher && (
+                <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-80 overflow-y-auto z-50">
+                  {sortedCameras.map((cam) => (
+                    <button
+                      key={cam.id}
+                      onClick={() => navigateToCamera(cam.id)}
+                      className={`w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-50 transition-colors ${cam.id === id ? "bg-blue-50" : ""}`}
+                    >
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${cam.is_online ? "bg-green-500" : "bg-red-400"}`} />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm truncate ${cam.id === id ? "font-semibold text-blue-700" : "text-gray-700"}`}>{cam.name}</p>
+                        {cam.location && <p className="text-[10px] text-gray-400 truncate">{cam.location}</p>}
+                      </div>
+                      {cam.id === id && <div className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" />}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
+
+            {/* Prev/Next camera buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => { const prev = sortedCameras[currentCamIndex - 1]; if (prev) navigateToCamera(prev.id); }}
+                disabled={currentCamIndex <= 0}
+                className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Camara anterior"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="text-[10px] text-gray-400 min-w-[3ch] text-center">{currentCamIndex + 1}/{sortedCameras.length}</span>
+              <button
+                onClick={() => { const next = sortedCameras[currentCamIndex + 1]; if (next) navigateToCamera(next.id); }}
+                disabled={currentCamIndex >= sortedCameras.length - 1}
+                className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Siguiente camara"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
-          {/* Right panel */}
-          <div className="space-y-4">
-            {showZonePanel && selectedDef ? (
-              /* ── ZONE CONTROL PANEL ── */
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {(() => { const I = selectedDef.icon; return <I className={`h-4 w-4 ${selectedDef.color}`} />; })()}
-                      <span>{selectedDef.label}</span>
-                    </div>
-                    <button onClick={() => { setSelectedDetection(null); setIsDrawing(false); }}
-                      className="text-xs text-gray-400 hover:text-gray-600 underline">Cerrar</button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {/* Zones list */}
-                  <div className="space-y-2">
-                    {selectedZones.length === 0 ? (
-                      <div className="text-center py-4 border border-dashed border-gray-200 rounded-lg">
-                        <Crosshair className="h-6 w-6 mx-auto mb-1 text-gray-300" />
-                        <p className="text-xs text-gray-400">Sin zonas — se analiza toda la imagen</p>
-                      </div>
-                    ) : (
-                      selectedZones.map((z, i) => {
-                        const c = getZoneColor(i);
-                        return (
-                          <div key={z.id} className="flex items-center justify-between p-2 rounded-lg border border-gray-200">
-                            <div className="flex items-center gap-2">
-                              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c.stroke }} />
-                              <span className="text-sm font-medium text-gray-700">{z.name}</span>
-                              <span className="text-[10px] text-gray-400">{z.points.length} pts</span>
-                            </div>
-                            <button onClick={() => deleteZone(selectedDetection!, z.id)}
-                              className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50">
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
+          {/* Right: dirty indicator + save + delete */}
+          <div className="flex items-center gap-2">
+            {isDirty && (
+              <span className="flex items-center gap-1 text-xs text-amber-600 font-medium">
+                <AlertTriangle className="h-3.5 w-3.5" /> Sin guardar
+              </span>
+            )}
+            {saved && <span className="text-xs text-green-600 font-medium">Guardado</span>}
+            <Button size="sm" onClick={handleSaveSettings} className={isDirty ? "animate-pulse" : ""}>
+              <Save className="h-4 w-4 mr-1" /> Guardar
+            </Button>
+            <Button size="sm" variant="outline" className="text-red-600 hover:bg-red-50" onClick={handleDelete}>
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
 
-                  {/* Add zone button */}
-                  {!isDrawing && selectedZones.length < MAX_ZONES_PER_DET && (
-                    <Button size="sm" className="w-full" onClick={startDrawing}>
-                      <PenTool className="h-4 w-4 mr-1" />
-                      Dibujar Zona ({selectedZones.length}/{MAX_ZONES_PER_DET})
-                    </Button>
-                  )}
-
-                  {isDrawing && (
-                    <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-xs text-blue-700 font-medium">
-                        {selectedDetection === "line_crossing"
-                          ? "Haz clic en 2 puntos para crear la linea de cruce."
-                          : "Dibujando sobre el video. Haz clic para agregar puntos (min 3)."}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Direction selector for line_crossing */}
-                  {selectedDetection === "line_crossing" && selectedZones.length > 0 && (
-                    <div className="space-y-2 border-t pt-2">
-                      <p className="text-[10px] font-medium text-gray-500 uppercase">Direccion de cruce</p>
-                      {selectedZones.map((z, i) => (
-                        <div key={`dir-${z.id}`} className="flex items-center gap-2">
-                          <span className="text-xs text-gray-600 w-16">{z.name}:</span>
-                          <div className="flex gap-1">
-                            {(["A_to_B", "B_to_A", "both"] as const).map((dir) => (
-                              <button key={dir}
-                                onClick={() => {
-                                  setDetZones((prev) => {
-                                    const zones = [...(prev[selectedDetection!]?.zones || [])];
-                                    const idx = zones.findIndex(zz => zz.id === z.id);
-                                    if (idx >= 0) zones[idx] = { ...zones[idx], direction: dir };
-                                    return { ...prev, [selectedDetection!]: { ...prev[selectedDetection!], zones } };
-                                  });
-                                }}
-                                className={`px-2 py-1 text-[10px] rounded border ${
-                                  (z as any).direction === dir
-                                    ? "bg-pink-100 border-pink-400 text-pink-700 font-medium"
-                                    : "border-gray-200 text-gray-500 hover:bg-gray-50"
-                                }`}>
-                                {dir === "A_to_B" ? "A \u2192 B" : dir === "B_to_A" ? "B \u2192 A" : "Ambos"}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Schedule */}
-                  <div className="border-t pt-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-medium text-gray-500 uppercase">Horario</p>
-                      <button
-                        onClick={() => {
-                          setDetZones((prev) => {
-                            const current = prev[selectedDetection!] || { zones: [] };
-                            const schedule = current.schedule?.enabled
-                              ? { enabled: false, startTime: "00:00", endTime: "23:59" }
-                              : { enabled: true, startTime: "08:00", endTime: "18:00" };
-                            return { ...prev, [selectedDetection!]: { ...current, schedule } };
-                          });
-                        }}
-                        className={`text-[10px] px-2 py-0.5 rounded border ${
-                          detZones[selectedDetection!]?.schedule?.enabled
-                            ? "bg-blue-50 border-blue-300 text-blue-700"
-                            : "border-gray-200 text-gray-500"
-                        }`}>
-                        {detZones[selectedDetection!]?.schedule?.enabled ? "Personalizado" : "24 Horas"}
-                      </button>
-                    </div>
-                    {detZones[selectedDetection!]?.schedule?.enabled && (
-                      <div className="flex items-center gap-2">
-                        <input type="time"
-                          value={detZones[selectedDetection!]?.schedule?.startTime || "08:00"}
-                          onChange={(e) => {
-                            setDetZones((prev) => {
-                              const current = prev[selectedDetection!] || { zones: [] };
-                              return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, startTime: e.target.value } } };
-                            });
-                          }}
-                          className="px-2 py-1 text-xs border border-gray-300 rounded" />
-                        <span className="text-xs text-gray-400">a</span>
-                        <input type="time"
-                          value={detZones[selectedDetection!]?.schedule?.endTime || "18:00"}
-                          onChange={(e) => {
-                            setDetZones((prev) => {
-                              const current = prev[selectedDetection!] || { zones: [] };
-                              return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, endTime: e.target.value } } };
-                            });
-                          }}
-                          className="px-2 py-1 text-xs border border-gray-300 rounded" />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Objeto Movido sub-option for abandoned_object */}
-                  {selectedDetection === "abandoned_object" && (
-                    <div className="border-t pt-3">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox"
-                          checked={detZones[selectedDetection]?.subOptions?.object_moved || false}
-                          onChange={(e) => {
-                            setDetZones((prev) => {
-                              const current = prev[selectedDetection!] || { zones: [] };
-                              const subOptions = { ...(current.subOptions || {}), object_moved: e.target.checked };
-                              return { ...prev, [selectedDetection!]: { ...current, subOptions } };
-                            });
-                          }}
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-                        <div>
-                          <p className="text-xs font-medium text-gray-700">Objeto Movido</p>
-                          <p className="text-[10px] text-gray-500">Alertar cuando un objeto es removido de su posicion</p>
-                        </div>
-                      </label>
-                    </div>
-                  )}
-
-                  {/* All detections zone summary */}
-                  <div className="border-t pt-3">
-                    <p className="text-[10px] font-medium text-gray-500 uppercase mb-2">Resumen de zonas</p>
-                    {enabledDetections.map((detId) => {
-                      const def = DETECTION_CAPABILITIES.find((c) => c.id === detId);
-                      const zones = detZones[detId]?.zones || [];
-                      const isSel = selectedDetection === detId;
-                      if (!def) return null;
+      {/* ── Main layout: Video (left) + Tabs Panel (right) ── */}
+      <div className="flex h-[calc(100vh-57px)]">
+        {/* ── LEFT: Video feed ── */}
+        <div className={`transition-all duration-300 ${panelCollapsed ? "flex-1" : "w-[60%]"} p-4 flex flex-col`}>
+          <div className="relative rounded-lg overflow-hidden border border-gray-200 flex-1">
+            {camera.camera_type === "fisheye" ? (
+              <FisheyeDewarper cameraName={streamName} isOnline={camera.is_online} />
+            ) : (
+              <>
+                <SnapshotPlayer
+                  cameraName={streamName}
+                  isOnline={camera.is_online}
+                  className="aspect-video w-full"
+                  intervalMs={67}
+                  width={1920}
+                  useMainStream={true}
+                />
+                {/* Zone polygons ON the video */}
+                {(activeTab === "detections" || activeTab === "live") && allZonePolygons.length > 0 && (
+                  <ZoneOverlay
+                    zones={allZonePolygons}
+                    isDrawing={activeTab === "detections" && isDrawing}
+                    currentPoints={activeTab === "detections" ? drawingPoints : []}
+                    onAddPoint={(p) => activeTab === "detections" && setDrawingPoints((prev) => [...prev, p])}
+                    drawColor={drawColor}
+                    drawType={selectedDetection === "line_crossing" ? "tripwire" : "roi"}
+                  />
+                )}
+                {/* Line crossing counters overlay */}
+                {activeTab === "live" && Object.keys(lineCounts).length > 0 && (
+                  <div className="absolute top-2 right-2 z-30 space-y-1">
+                    {Object.entries(lineCounts).map(([twId, dirs]) => {
+                      const zone = allZonePolygons.find(z => z.id === twId);
+                      const name = zone?.name || "Linea";
+                      const aToB = dirs["A\u2192B"] || 0;
+                      const bToA = dirs["B\u2192A"] || 0;
                       return (
-                        <button key={detId} onClick={() => { setSelectedDetection(detId); setIsDrawing(false); setDrawingPoints([]); }}
-                          className={`w-full flex items-center gap-2 p-1.5 rounded text-left text-xs mb-1 transition-colors ${
-                            isSel ? "bg-blue-50 border border-blue-200" : "hover:bg-gray-50"
-                          }`}>
-                          {(() => { const I = def.icon; return <I className={`h-3.5 w-3.5 ${def.color}`} />; })()}
-                          <span className="flex-1 text-gray-700">{def.label}</span>
-                          {zones.length > 0 ? (
-                            <Badge variant="default" className="text-[9px] py-0 px-1.5 bg-blue-600">{zones.length} zona{zones.length > 1 ? "s" : ""}</Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-[9px] py-0 px-1.5">Completa</Badge>
-                          )}
-                        </button>
+                        <div key={twId} className="bg-black/75 backdrop-blur rounded-lg px-3 py-1.5 text-white text-xs font-medium flex items-center gap-3">
+                          <span className="text-blue-300">{name}</span>
+                          <span>A\u2192B: <span className="text-green-400 font-bold">{aToB}</span></span>
+                          <span>B\u2192A: <span className="text-yellow-400 font-bold">{bToA}</span></span>
+                          <span className="text-white/60">Total: {aToB + bToA}</span>
+                        </div>
                       );
                     })}
                   </div>
-                </CardContent>
-              </Card>
-            ) : (
-              /* ── CAMERA INFO (default) ── */
-              <>
+                )}
+                {/* Detection boxes */}
+                {camera.is_online && liveDetections.length > 0 && (
+                  <DetectionOverlay detections={liveDetections} className="z-20" />
+                )}
+              </>
+            )}
+
+            {/* Drawing toolbar on video */}
+            {isDrawing && (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/70 rounded-lg px-4 py-2 backdrop-blur">
+                <span className="text-white text-xs font-medium">{drawingPoints.length} puntos</span>
+                <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
+                  onClick={() => setDrawingPoints((p) => p.slice(0, -1))} disabled={drawingPoints.length === 0}>
+                  <Undo className="h-3 w-3 mr-1" /> Deshacer
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
+                  onClick={cancelDrawing}>
+                  <XCircle className="h-3 w-3 mr-1" /> Cancelar
+                </Button>
+                <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700"
+                  onClick={saveCurrentZone} disabled={drawingPoints.length < (selectedDetection === "line_crossing" ? 2 : 3)}>
+                  <Save className="h-3 w-3 mr-1" /> {selectedDetection === "line_crossing" ? "Guardar Linea" : "Guardar Zona"}
+                </Button>
+              </div>
+            )}
+
+            {/* Collapse/expand panel toggle on video corner */}
+            <button
+              onClick={() => setPanelCollapsed(!panelCollapsed)}
+              className="absolute top-2 left-2 z-20 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white backdrop-blur transition-colors"
+              title={panelCollapsed ? "Mostrar panel" : "Maximizar video"}
+            >
+              {panelCollapsed ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </button>
+          </div>
+
+          {/* Camera info bar below video */}
+          <div className="flex items-center gap-4 mt-2 px-1 text-xs text-gray-400">
+            <span className="font-mono">{camera.ip_address}</span>
+            {camera.manufacturer && <span>{camera.manufacturer}</span>}
+            {camera.model && <span>{camera.model}</span>}
+            {camera.location && <span>{camera.location}</span>}
+            <span className="ml-auto">{enabledDetections.length} detecciones activas</span>
+          </div>
+        </div>
+
+        {/* ── RIGHT: Tabs + Content Panel ── */}
+        <div className={`transition-all duration-300 ${panelCollapsed ? "w-0 overflow-hidden opacity-0" : "w-[40%]"} border-l border-gray-200 flex flex-col bg-gray-50/50`}>
+          {/* Tab bar */}
+          <div className="flex border-b border-gray-200 bg-white shrink-0">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => { setActiveTab(tab.id); if (tab.id !== "detections") { setSelectedDetection(null); setIsDrawing(false); } }}
+                className={`flex-1 px-2 py-2.5 text-xs font-medium border-b-2 transition-colors truncate ${
+                  activeTab === tab.id ? "border-blue-600 text-blue-600 bg-blue-50/50" : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content — scrollable */}
+          <div className="flex-1 overflow-y-auto p-4">
+
+            {/* ── LIVE TAB ── */}
+            {activeTab === "live" && (
+              <div className="space-y-4">
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center justify-between">
+                    <CardTitle className="text-sm flex items-center justify-between">
                       Info de Camara
                       <Badge variant={camera.is_online ? "success" : "destructive"}>
                         {camera.is_online ? "Online" : "Offline"}
@@ -803,192 +788,371 @@ export default function CameraDetailPage() {
                     <CardContent className="p-4"><PTZControls cameraId={camera.id} /></CardContent>
                   </Card>
                 )}
-              </>
+              </div>
+            )}
+
+            {/* ── CONFIG TAB ── */}
+            {activeTab === "config" && (
+              <div className="space-y-4">
+                <Card>
+                  <CardContent className="p-4 space-y-3">
+                    <div><label className="block text-xs font-medium text-gray-700 mb-1">Nombre</label>
+                      <input type="text" value={editName} onChange={(e) => { setEditName(e.target.value); markDirty(); }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500" /></div>
+                    <div><label className="block text-xs font-medium text-gray-700 mb-1">IP</label>
+                      <input type="text" value={editIp} onChange={(e) => { setEditIp(e.target.value); markDirty(); }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" placeholder="192.168.1.100" /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="block text-xs font-medium text-gray-700 mb-1">Puerto</label>
+                        <input type="number" value={editPort} onChange={(e) => { setEditPort(e.target.value); markDirty(); }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
+                      <div><label className="block text-xs font-medium text-gray-700 mb-1">Usuario</label>
+                        <input type="text" value={editUsername} onChange={(e) => { setEditUsername(e.target.value); markDirty(); }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
+                    </div>
+                    <div><label className="block text-xs font-medium text-gray-700 mb-1">Contrasena</label>
+                      <input type="password" value={editPassword} onChange={(e) => { setEditPassword(e.target.value); markDirty(); }}
+                        placeholder="••••••••" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
+                    <div><label className="block text-xs font-medium text-gray-700 mb-1">Ubicacion</label>
+                      <input type="text" value={editLocation} onChange={(e) => { setEditLocation(e.target.value); markDirty(); }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="Ej: Lobby" /></div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4 space-y-3">
+                    <h4 className="text-xs font-semibold">Clasificacion</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                      {CAMERA_TYPES.map((t) => (
+                        <button key={t.value} onClick={() => { setEditCameraType(t.value); markDirty(); }}
+                          className={`px-2 py-1.5 text-xs font-medium rounded-lg border ${editCameraType === t.value ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-600"}`}>
+                          {t.label}</button>
+                      ))}
+                    </div>
+                    <select value={editManufacturer} onChange={(e) => { setEditManufacturer(e.target.value); markDirty(); }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                      <option value="">Marca...</option>
+                      {CAMERA_BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                    <input type="text" value={editModel} onChange={(e) => { setEditModel(e.target.value); markDirty(); }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="Modelo" />
+                  </CardContent>
+                </Card>
+                <Button size="sm" className="w-full" onClick={handleSaveCameraConfig} disabled={editSaving}>
+                  <Save className="h-4 w-4 mr-1" /> {editSaving ? "Guardando..." : "Guardar Camara"}
+                </Button>
+              </div>
+            )}
+
+            {/* ── DETECTIONS TAB ── */}
+            {activeTab === "detections" && (
+              <div className="space-y-3">
+                {/* Zone control panel when a detection is selected */}
+                {showZonePanel && selectedDef && (
+                  <Card className="mb-3 border-blue-200 bg-blue-50/30">
+                    <CardHeader className="pb-2 pt-3 px-4">
+                      <CardTitle className="text-sm flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {(() => { const I = selectedDef.icon; return <I className={`h-4 w-4 ${selectedDef.color}`} />; })()}
+                          <span>{selectedDef.label}</span>
+                        </div>
+                        <button onClick={() => { setSelectedDetection(null); setIsDrawing(false); }}
+                          className="text-xs text-gray-400 hover:text-gray-600 underline">Cerrar</button>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 px-4 pb-3">
+                      {/* Zones list */}
+                      <div className="space-y-2">
+                        {selectedZones.length === 0 ? (
+                          <div className="text-center py-3 border border-dashed border-gray-200 rounded-lg bg-white">
+                            <Crosshair className="h-5 w-5 mx-auto mb-1 text-gray-300" />
+                            <p className="text-xs text-gray-400">Sin zonas - se analiza toda la imagen</p>
+                          </div>
+                        ) : (
+                          selectedZones.map((z, i) => {
+                            const c = getZoneColor(i);
+                            return (
+                              <div key={z.id} className="flex items-center justify-between p-2 rounded-lg border border-gray-200 bg-white">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c.stroke }} />
+                                  <span className="text-sm font-medium text-gray-700">{z.name}</span>
+                                  <span className="text-[10px] text-gray-400">{z.points.length} pts</span>
+                                </div>
+                                <button onClick={() => deleteZone(selectedDetection!, z.id)}
+                                  className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Add zone button */}
+                      {!isDrawing && selectedZones.length < MAX_ZONES_PER_DET && (
+                        <Button size="sm" className="w-full" onClick={startDrawing}>
+                          <PenTool className="h-4 w-4 mr-1" />
+                          Dibujar {selectedDetection === "line_crossing" ? "Linea" : "Zona"} ({selectedZones.length}/{MAX_ZONES_PER_DET})
+                        </Button>
+                      )}
+
+                      {isDrawing && (
+                        <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                          <p className="text-xs text-blue-700 font-medium">
+                            {selectedDetection === "line_crossing"
+                              ? "Haz clic en 2 puntos sobre el video para crear la linea."
+                              : "Haz clic sobre el video para agregar puntos (min 3)."}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Direction selector for line_crossing */}
+                      {selectedDetection === "line_crossing" && selectedZones.length > 0 && (
+                        <div className="space-y-2 border-t pt-2">
+                          <p className="text-[10px] font-medium text-gray-500 uppercase">Direccion de cruce</p>
+                          {selectedZones.map((z) => (
+                            <div key={`dir-${z.id}`} className="flex items-center gap-2">
+                              <span className="text-xs text-gray-600 w-14 truncate">{z.name}:</span>
+                              <div className="flex gap-1">
+                                {(["A_to_B", "B_to_A", "both"] as const).map((dir) => (
+                                  <button key={dir}
+                                    onClick={() => {
+                                      markDirty();
+                                      setDetZones((prev) => {
+                                        const zones = [...(prev[selectedDetection!]?.zones || [])];
+                                        const idx = zones.findIndex(zz => zz.id === z.id);
+                                        if (idx >= 0) zones[idx] = { ...zones[idx], direction: dir };
+                                        return { ...prev, [selectedDetection!]: { ...prev[selectedDetection!], zones } };
+                                      });
+                                    }}
+                                    className={`px-2 py-1 text-[10px] rounded border ${
+                                      (z as any).direction === dir
+                                        ? "bg-pink-100 border-pink-400 text-pink-700 font-medium"
+                                        : "border-gray-200 text-gray-500 hover:bg-gray-50"
+                                    }`}>
+                                    {dir === "A_to_B" ? "A \u2192 B" : dir === "B_to_A" ? "B \u2192 A" : "Ambos"}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Schedule */}
+                      <div className="border-t pt-2 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] font-medium text-gray-500 uppercase">Horario</p>
+                          <button
+                            onClick={() => {
+                              markDirty();
+                              setDetZones((prev) => {
+                                const current = prev[selectedDetection!] || { zones: [] };
+                                const schedule = current.schedule?.enabled
+                                  ? { enabled: false, startTime: "00:00", endTime: "23:59" }
+                                  : { enabled: true, startTime: "08:00", endTime: "18:00" };
+                                return { ...prev, [selectedDetection!]: { ...current, schedule } };
+                              });
+                            }}
+                            className={`text-[10px] px-2 py-0.5 rounded border ${
+                              detZones[selectedDetection!]?.schedule?.enabled
+                                ? "bg-blue-50 border-blue-300 text-blue-700"
+                                : "border-gray-200 text-gray-500"
+                            }`}>
+                            {detZones[selectedDetection!]?.schedule?.enabled ? "Personalizado" : "24 Horas"}
+                          </button>
+                        </div>
+                        {detZones[selectedDetection!]?.schedule?.enabled && (
+                          <div className="flex items-center gap-2">
+                            <input type="time"
+                              value={detZones[selectedDetection!]?.schedule?.startTime || "08:00"}
+                              onChange={(e) => {
+                                markDirty();
+                                setDetZones((prev) => {
+                                  const current = prev[selectedDetection!] || { zones: [] };
+                                  return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, startTime: e.target.value } } };
+                                });
+                              }}
+                              className="px-2 py-1 text-xs border border-gray-300 rounded" />
+                            <span className="text-xs text-gray-400">a</span>
+                            <input type="time"
+                              value={detZones[selectedDetection!]?.schedule?.endTime || "18:00"}
+                              onChange={(e) => {
+                                markDirty();
+                                setDetZones((prev) => {
+                                  const current = prev[selectedDetection!] || { zones: [] };
+                                  return { ...prev, [selectedDetection!]: { ...current, schedule: { ...current.schedule!, endTime: e.target.value } } };
+                                });
+                              }}
+                              className="px-2 py-1 text-xs border border-gray-300 rounded" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Objeto Movido sub-option for abandoned_object */}
+                      {selectedDetection === "abandoned_object" && (
+                        <div className="border-t pt-2">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox"
+                              checked={detZones[selectedDetection]?.subOptions?.object_moved || false}
+                              onChange={(e) => {
+                                markDirty();
+                                setDetZones((prev) => {
+                                  const current = prev[selectedDetection!] || { zones: [] };
+                                  const subOptions = { ...(current.subOptions || {}), object_moved: e.target.checked };
+                                  return { ...prev, [selectedDetection!]: { ...current, subOptions } };
+                                });
+                              }}
+                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                            <div>
+                              <p className="text-xs font-medium text-gray-700">Objeto Movido</p>
+                              <p className="text-[10px] text-gray-500">Alertar cuando un objeto es removido</p>
+                            </div>
+                          </label>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Detection capabilities list */}
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">Detecciones</h3>
+                    <p className="text-[10px] text-gray-500">Activa y dibuja zonas sobre el video.</p>
+                  </div>
+                  <Badge variant="default" className="text-[10px]">{enabledDetections.length} activas</Badge>
+                </div>
+                <div className="space-y-2">
+                  {DETECTION_CAPABILITIES.map((cap) => {
+                    const isEnabled = enabledDetections.includes(cap.id);
+                    const isSel = selectedDetection === cap.id;
+                    const zones = detZones[cap.id]?.zones || [];
+                    return (
+                      <div key={cap.id} className="relative">
+                        <button onClick={() => toggleDetection(cap.id)}
+                          className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
+                            isSel ? `${cap.border} ${cap.bg} ring-2 ring-offset-1 ring-blue-300`
+                              : isEnabled ? "border-blue-500 bg-blue-50"
+                              : "border-gray-200 hover:border-gray-300 bg-white"
+                          }`}>
+                          <div className={`${isEnabled ? cap.color : "text-gray-400"}`}>
+                            {(() => { const I = cap.icon; return <I className="h-4 w-4" />; })()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className={`text-xs font-medium ${isEnabled ? "text-gray-900" : "text-gray-600"}`}>{cap.label}</span>
+                              <div className="flex items-center gap-2">
+                                {isEnabled && zones.length > 0 && (
+                                  <Badge variant="default" className="text-[9px] py-0 px-1.5 bg-blue-600">
+                                    {zones.length}
+                                  </Badge>
+                                )}
+                                <div className={`h-4 w-7 rounded-full transition-colors ${isEnabled ? "bg-blue-600" : "bg-gray-300"}`}>
+                                  <div className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${isEnabled ? "translate-x-3" : "translate-x-0"}`} />
+                                </div>
+                              </div>
+                            </div>
+                            <p className="text-[10px] text-gray-500 mt-0.5 truncate">{cap.desc}</p>
+                          </div>
+                        </button>
+                        {isEnabled && !isSel && (
+                          <button onClick={(e) => { e.stopPropagation(); setSelectedDetection(cap.id); setIsDrawing(false); setDrawingPoints([]); }}
+                            className="absolute top-2 right-12 p-1 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50"
+                            title="Configurar zonas">
+                            <Crosshair className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Zones summary */}
+                {enabledDetections.length > 0 && (
+                  <div className="border-t pt-3 mt-3">
+                    <p className="text-[10px] font-medium text-gray-500 uppercase mb-2">Resumen de zonas</p>
+                    {enabledDetections.map((detId) => {
+                      const def = DETECTION_CAPABILITIES.find((c) => c.id === detId);
+                      const zones = detZones[detId]?.zones || [];
+                      const isSel = selectedDetection === detId;
+                      if (!def) return null;
+                      return (
+                        <button key={detId} onClick={() => { setSelectedDetection(detId); setIsDrawing(false); setDrawingPoints([]); }}
+                          className={`w-full flex items-center gap-2 p-1.5 rounded text-left text-xs mb-1 transition-colors ${
+                            isSel ? "bg-blue-50 border border-blue-200" : "hover:bg-gray-100"
+                          }`}>
+                          {(() => { const I = def.icon; return <I className={`h-3.5 w-3.5 ${def.color}`} />; })()}
+                          <span className="flex-1 text-gray-700">{def.label}</span>
+                          {zones.length > 0 ? (
+                            <Badge variant="default" className="text-[9px] py-0 px-1.5 bg-blue-600">{zones.length} zona{zones.length > 1 ? "s" : ""}</Badge>
+                          ) : (
+                            <Badge variant="secondary" className="text-[9px] py-0 px-1.5">Completa</Badge>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── IMAGE TAB ── */}
+            {activeTab === "image" && (
+              <div className="space-y-4">
+                <Card>
+                  <CardContent className="p-4 space-y-4">
+                    {[
+                      { key: "brightness", label: "Brillo" }, { key: "contrast", label: "Contraste" },
+                      { key: "saturation", label: "Saturacion" }, { key: "sharpness", label: "Nitidez" },
+                    ].map(({ key, label }) => (
+                      <div key={key}>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span className="text-gray-700">{label}</span><span className="font-medium">{(imageSettings as any)[key]}%</span>
+                        </div>
+                        <input type="range" min="0" max="100" value={(imageSettings as any)[key]}
+                          onChange={(e) => {
+                            markDirty();
+                            const next = { ...imageSettings, [key]: parseInt(e.target.value) };
+                            setImageSettings(next);
+                            applyImageToCamera(next);
+                          }}
+                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                      </div>
+                    ))}
+                    {/* WDR Toggle */}
+                    <div className="flex items-center justify-between pt-2 border-t">
+                      <div>
+                        <span className="text-sm text-gray-700 font-medium">WDR</span>
+                        <p className="text-[10px] text-gray-500">Rango dinamico amplio</p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          markDirty();
+                          const next = { ...imageSettings, wdr: !imageSettings.wdr };
+                          setImageSettings(next);
+                          applyImageToCamera(next);
+                        }}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${imageSettings.wdr ? "bg-blue-600" : "bg-gray-300"}`}
+                      >
+                        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${imageSettings.wdr ? "translate-x-6" : "translate-x-1"}`} />
+                      </button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* ── EVENTS TAB ── */}
+            {activeTab === "events" && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-gray-900">Eventos Recientes</h3>
+                {events.length === 0 ? (
+                  <p className="text-sm text-gray-400 py-8 text-center">Sin eventos</p>
+                ) : events.map((e: any) => <EventCard key={e.id} {...e} camera_name={camera.name} />)}
+              </div>
             )}
           </div>
         </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-gray-200">
-          {tabs.map((tab) => (
-            <button key={tab.id}
-              onClick={() => { setActiveTab(tab.id); if (tab.id !== "detections") { setSelectedDetection(null); setIsDrawing(false); } }}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab.id ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* CONFIG TAB */}
-        {activeTab === "config" && (
-          <div className="space-y-4 max-w-2xl">
-            <Card>
-              <CardContent className="p-5 space-y-4">
-                <div><label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
-                  <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500" /></div>
-                <div><label className="block text-sm font-medium text-gray-700 mb-1">IP</label>
-                  <input type="text" value={editIp} onChange={(e) => setEditIp(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" placeholder="192.168.1.100" /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div><label className="block text-sm font-medium text-gray-700 mb-1">Puerto</label>
-                    <input type="number" value={editPort} onChange={(e) => setEditPort(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
-                  <div><label className="block text-sm font-medium text-gray-700 mb-1">Usuario</label>
-                    <input type="text" value={editUsername} onChange={(e) => setEditUsername(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
-                </div>
-                <div><label className="block text-sm font-medium text-gray-700 mb-1">Contrasena</label>
-                  <input type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)}
-                    placeholder="••••••••" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></div>
-                <div><label className="block text-sm font-medium text-gray-700 mb-1">Ubicacion</label>
-                  <input type="text" value={editLocation} onChange={(e) => setEditLocation(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="Ej: Lobby" /></div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="p-5 space-y-4">
-                <h4 className="text-sm font-semibold">Clasificacion</h4>
-                <div className="grid grid-cols-4 gap-2">
-                  {CAMERA_TYPES.map((t) => (
-                    <button key={t.value} onClick={() => setEditCameraType(t.value)}
-                      className={`px-3 py-2 text-xs font-medium rounded-lg border ${editCameraType === t.value ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-600"}`}>
-                      {t.label}</button>
-                  ))}
-                </div>
-                <select value={editManufacturer} onChange={(e) => setEditManufacturer(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-                  <option value="">Marca...</option>
-                  {CAMERA_BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
-                </select>
-                <input type="text" value={editModel} onChange={(e) => setEditModel(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="Modelo" />
-              </CardContent>
-            </Card>
-            <Button onClick={handleSaveCameraConfig} disabled={editSaving}>
-              <Save className="h-4 w-4 mr-1" /> {editSaving ? "Guardando..." : "Guardar"}
-            </Button>
-          </div>
-        )}
-
-        {/* DETECTIONS TAB */}
-        {activeTab === "detections" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900">Capacidades de Deteccion</h3>
-                <p className="text-xs text-gray-500 mt-0.5">Activa una deteccion y dibuja zonas sobre el video.</p>
-              </div>
-              <Badge variant="default">{enabledDetections.length} activas</Badge>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {DETECTION_CAPABILITIES.map((cap) => {
-                const isEnabled = enabledDetections.includes(cap.id);
-                const isSel = selectedDetection === cap.id;
-                const zones = detZones[cap.id]?.zones || [];
-                return (
-                  <div key={cap.id} className="relative">
-                    <button onClick={() => toggleDetection(cap.id)}
-                      className={`w-full flex items-start gap-3 p-4 rounded-lg border text-left transition-all ${
-                        isSel ? `${cap.border} ${cap.bg} ring-2 ring-offset-1 ring-blue-300`
-                          : isEnabled ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:border-gray-300"
-                      }`}>
-                      <div className={`mt-0.5 ${isEnabled ? cap.color : "text-gray-400"}`}>
-                        {(() => { const I = cap.icon; return <I className="h-5 w-5" />; })()}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                          <span className={`text-sm font-medium ${isEnabled ? "text-gray-900" : "text-gray-600"}`}>{cap.label}</span>
-                          <div className="flex items-center gap-2">
-                            {isEnabled && zones.length > 0 && (
-                              <Badge variant="default" className="text-[9px] py-0 px-1.5 bg-blue-600">
-                                {zones.length} zona{zones.length > 1 ? "s" : ""}
-                              </Badge>
-                            )}
-                            <div className={`h-4 w-8 rounded-full transition-colors ${isEnabled ? "bg-blue-600" : "bg-gray-300"}`}>
-                              <div className={`h-4 w-4 rounded-full bg-white shadow transition-transform ${isEnabled ? "translate-x-4" : "translate-x-0"}`} />
-                            </div>
-                          </div>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-0.5">{cap.desc}</p>
-                      </div>
-                    </button>
-                    {isEnabled && !isSel && (
-                      <button onClick={(e) => { e.stopPropagation(); setSelectedDetection(cap.id); setIsDrawing(false); setDrawingPoints([]); }}
-                        className="absolute top-2 right-14 p-1 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50"
-                        title="Configurar zonas">
-                        <Crosshair className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* IMAGE TAB */}
-        {activeTab === "image" && (
-          <div className="space-y-4 max-w-2xl">
-            <Card>
-              <CardContent className="p-5 space-y-5">
-                {[
-                  { key: "brightness", label: "Brillo" }, { key: "contrast", label: "Contraste" },
-                  { key: "saturation", label: "Saturacion" }, { key: "sharpness", label: "Nitidez" },
-                ].map(({ key, label }) => (
-                  <div key={key}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-gray-700">{label}</span><span className="font-medium">{(imageSettings as any)[key]}%</span>
-                    </div>
-                    <input type="range" min="0" max="100" value={(imageSettings as any)[key]}
-                      onChange={(e) => {
-                        const next = { ...imageSettings, [key]: parseInt(e.target.value) };
-                        setImageSettings(next);
-                        applyImageToCamera(next);
-                      }}
-                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
-                  </div>
-                ))}
-                {/* WDR Toggle */}
-                <div className="flex items-center justify-between pt-2 border-t">
-                  <div>
-                    <span className="text-sm text-gray-700 font-medium">WDR (Rango Dinamico Amplio)</span>
-                    <p className="text-xs text-gray-500">Mejora la imagen en condiciones de alto contraste de luz</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const next = { ...imageSettings, wdr: !imageSettings.wdr };
-                      setImageSettings(next);
-                      applyImageToCamera(next);
-                    }}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${imageSettings.wdr ? "bg-blue-600" : "bg-gray-300"}`}
-                  >
-                    <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${imageSettings.wdr ? "translate-x-6" : "translate-x-1"}`} />
-                  </button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {/* EVENTS TAB */}
-        {activeTab === "events" && (
-          <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-900">Eventos Recientes</h3>
-            {events.length === 0 ? (
-              <p className="text-sm text-gray-400 py-8 text-center">Sin eventos</p>
-            ) : events.map((e: any) => <EventCard key={e.id} {...e} camera_name={camera.name} />)}
-          </div>
-        )}
-
-        {activeTab === "live" && (
-          <div className="text-center text-sm text-gray-400">
-            Transmision en vivo arriba. Detecciones activas: {enabledDetections.length}
-          </div>
-        )}
       </div>
     </>
   );
