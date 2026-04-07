@@ -98,6 +98,7 @@ class DetectorService:
         self.cam_detect_classes: dict[str, list | None] = {}
         self.cam_line_crossing: dict[str, dict] = {}
         self.cam_line_counters: dict[str, dict[str, dict[str, int]]] = {}  # cam_id -> {tw_id -> {"A→B": n, "B→A": n}}
+        self._motion_cam_ids: set[str] = set()  # cameras with detections in last cycle (for hi-res re-scan)
 
     # ── YOLO label -> UI detection class mapping ──
     YOLO_TO_CLASS = {
@@ -309,8 +310,9 @@ class DetectorService:
                     await asyncio.sleep(0.5)
                     continue
 
-                # ── Step 2: Build mosaics (CPU, fast) ──
-                mosaics, tile_map = build_mosaics(frames)
+                # ── Step 2: Build adaptive mosaics (CPU, fast) ──
+                # Pass motion cameras for hi-res 2x2 re-scan when >8 cameras
+                mosaics, tile_map = build_mosaics(frames, motion_cam_ids=self._motion_cam_ids)
                 t_mosaic = time.monotonic()
 
                 # ── Step 3: YOLO inference on mosaics (GPU) ──
@@ -326,12 +328,19 @@ class DetectorService:
                 run_face = (frame_count % face_every_n == 0) and self._face_recognizer.available
 
                 # ── Step 5: Per-camera processing ──
+                # Track which cameras had detections this cycle (for next cycle's motion priority)
+                cycle_motion_cams: set[str] = set()
+
                 for cam_id in list(self.cam_streams):
                     frame = frames.get(cam_id)
                     if frame is None:
                         continue
 
                     detections = cam_detections.get(cam_id, [])
+
+                    # Mark camera as having motion if it has detections
+                    if detections:
+                        cycle_motion_cams.add(cam_id)
 
                     await self._process_camera(
                         cam_id=cam_id,
@@ -341,6 +350,9 @@ class DetectorService:
                         run_face=run_face,
                         show_diag=(frame_count % diag_every == 1),
                     )
+
+                # Update motion set for next cycle
+                self._motion_cam_ids = cycle_motion_cams
 
                 # ── Timing ──
                 t_end = time.monotonic()
@@ -352,9 +364,12 @@ class DetectorService:
                 # Periodic timing log
                 if frame_count % diag_every == 0:
                     total_dets = sum(len(d) for d in cam_detections.values())
+                    grid_info = f"{'2x2' if len(frames) <= 8 else '3x3+2x2'}"
                     log.info("mosaic_loop.timing",
                              cameras=len(frames),
                              mosaics=len(mosaics),
+                             grid=grid_info,
+                             motion_cams=len(self._motion_cam_ids),
                              detections=total_dets,
                              fetch_ms=f"{(t_fetch - t0) * 1000:.0f}",
                              mosaic_ms=f"{(t_mosaic - t_fetch) * 1000:.0f}",

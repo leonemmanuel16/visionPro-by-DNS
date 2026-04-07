@@ -1,12 +1,13 @@
-"""Mosaic Builder — Packs multiple camera frames into 3x3 grid images for batched YOLO.
+"""Adaptive Mosaic Builder — Variable grid sizes for optimal YOLO inference.
 
-Instead of running YOLO on 18 individual frames (270 fps at 15fps = impossible on T1000),
-we pack 9 cameras per 640x640 mosaic -> 2 mosaics x 15fps = 30fps (achievable).
+Strategy based on active camera count:
+  ≤4  cameras: 1x 2x2  (1 inference,  320px/tile — best detail)
+  5-8 cameras: 2x 2x2  (2 inferences, 320px/tile)
+  9+  cameras: Nx 3x3  (N inferences, 213px/tile)
+              + 1x 2x2 for cameras with recent motion (higher detail re-scan)
 
-Flow:
-  1. build_mosaics(): 18 frames -> 2 mosaics of 640x640 (9 cameras each)
-  2. YOLO runs on the 2 mosaics (batch=2)
-  3. remap_detections(): maps YOLO bboxes back to per-camera original coordinates
+The motion-priority 2x2 gives cameras that had detections in the previous
+cycle a second pass at 50% higher resolution per tile (320px vs 213px).
 """
 
 from dataclasses import dataclass
@@ -15,8 +16,6 @@ import cv2
 import numpy as np
 
 MOSAIC_SIZE = 640
-GRID = 3  # 3x3
-TILE_SIZE = MOSAIC_SIZE // GRID  # 213 pixels per tile
 
 
 @dataclass
@@ -26,17 +25,61 @@ class TileInfo:
     mosaic_idx: int
     row: int
     col: int
+    grid: int       # 2 or 3 (grid size used for this mosaic)
     orig_h: int
     orig_w: int
 
 
+def _build_single_mosaic(
+    cam_ids: list[str],
+    frames: dict[str, np.ndarray],
+    grid: int,
+    mosaic_idx: int,
+) -> tuple[np.ndarray, list[TileInfo]]:
+    """Build one mosaic image with the given grid size."""
+    tile_size = MOSAIC_SIZE // grid
+    mosaic = np.zeros((MOSAIC_SIZE, MOSAIC_SIZE, 3), dtype=np.uint8)
+    tile_map: list[TileInfo] = []
+
+    for i, cam_id in enumerate(cam_ids):
+        if i >= grid * grid:
+            break
+        row = i // grid
+        col = i % grid
+        frame = frames.get(cam_id)
+        if frame is None:
+            continue
+        orig_h, orig_w = frame.shape[:2]
+
+        tile = cv2.resize(frame, (tile_size, tile_size), interpolation=cv2.INTER_LINEAR)
+
+        y0 = row * tile_size
+        x0 = col * tile_size
+        mosaic[y0 : y0 + tile_size, x0 : x0 + tile_size] = tile
+
+        tile_map.append(TileInfo(
+            camera_id=cam_id,
+            mosaic_idx=mosaic_idx,
+            row=row,
+            col=col,
+            grid=grid,
+            orig_h=orig_h,
+            orig_w=orig_w,
+        ))
+
+    return mosaic, tile_map
+
+
 def build_mosaics(
     frames: dict[str, np.ndarray],
+    motion_cam_ids: set[str] | None = None,
 ) -> tuple[list[np.ndarray], list[TileInfo]]:
-    """Build 3x3 mosaic images from camera frames.
+    """Build adaptive mosaic images from camera frames.
 
     Args:
         frames: dict mapping camera_id -> BGR frame (any resolution)
+        motion_cam_ids: set of camera IDs that had detections in the
+                        previous cycle (prioritized for hi-res 2x2 re-scan)
 
     Returns:
         (mosaics, tile_map):
@@ -44,37 +87,46 @@ def build_mosaics(
             tile_map: list of TileInfo for every camera placed in a mosaic
     """
     camera_ids = list(frames.keys())
-    cams_per_mosaic = GRID * GRID  # 9
-    tile_map: list[TileInfo] = []
+    num_cams = len(camera_ids)
     mosaics: list[np.ndarray] = []
+    tile_map: list[TileInfo] = []
 
-    for batch_start in range(0, len(camera_ids), cams_per_mosaic):
-        batch_ids = camera_ids[batch_start : batch_start + cams_per_mosaic]
-        mosaic = np.zeros((MOSAIC_SIZE, MOSAIC_SIZE, 3), dtype=np.uint8)
+    if num_cams == 0:
+        return mosaics, tile_map
 
-        for i, cam_id in enumerate(batch_ids):
-            row = i // GRID
-            col = i % GRID
-            frame = frames[cam_id]
-            orig_h, orig_w = frame.shape[:2]
+    if num_cams <= 8:
+        # ── Use 2x2 mosaics only (320px per tile = best detail) ──
+        cams_per_mosaic = 4
+        for batch_start in range(0, num_cams, cams_per_mosaic):
+            batch_ids = camera_ids[batch_start : batch_start + cams_per_mosaic]
+            mosaic_idx = len(mosaics)
+            mosaic, tiles = _build_single_mosaic(batch_ids, frames, grid=2, mosaic_idx=mosaic_idx)
+            mosaics.append(mosaic)
+            tile_map.extend(tiles)
+    else:
+        # ── Use 3x3 mosaics for full coverage (213px per tile) ──
+        cams_per_mosaic = 9
+        for batch_start in range(0, num_cams, cams_per_mosaic):
+            batch_ids = camera_ids[batch_start : batch_start + cams_per_mosaic]
+            mosaic_idx = len(mosaics)
+            mosaic, tiles = _build_single_mosaic(batch_ids, frames, grid=3, mosaic_idx=mosaic_idx)
+            mosaics.append(mosaic)
+            tile_map.extend(tiles)
 
-            # Resize to tile — squash is fine, YOLO handles aspect distortion
-            tile = cv2.resize(frame, (TILE_SIZE, TILE_SIZE), interpolation=cv2.INTER_LINEAR)
+        # ── Extra 2x2 mosaic for cameras with motion (hi-res re-scan) ──
+        if motion_cam_ids:
+            # Pick up to 4 cameras that had detections, prioritizing motion
+            motion_cams = [cid for cid in camera_ids if cid in motion_cam_ids]
+            if len(motion_cams) > 4:
+                motion_cams = motion_cams[:4]
 
-            y0 = row * TILE_SIZE
-            x0 = col * TILE_SIZE
-            mosaic[y0 : y0 + TILE_SIZE, x0 : x0 + TILE_SIZE] = tile
-
-            tile_map.append(TileInfo(
-                camera_id=cam_id,
-                mosaic_idx=len(mosaics),
-                row=row,
-                col=col,
-                orig_h=orig_h,
-                orig_w=orig_w,
-            ))
-
-        mosaics.append(mosaic)
+            if motion_cams:
+                mosaic_idx = len(mosaics)
+                mosaic, tiles = _build_single_mosaic(
+                    motion_cams, frames, grid=2, mosaic_idx=mosaic_idx,
+                )
+                mosaics.append(mosaic)
+                tile_map.extend(tiles)
 
     return mosaics, tile_map
 
@@ -84,6 +136,10 @@ def remap_detections(
     tile_map: list[TileInfo],
 ) -> dict[str, list]:
     """Remap YOLO detections from mosaic coordinates to per-camera original coordinates.
+
+    Handles mixed grid sizes (2x2 and 3x3) using the grid info stored in TileInfo.
+    When a camera appears in both a 3x3 and a 2x2 mosaic (motion re-scan),
+    detections from both are merged — the 2x2 pass may catch things the 3x3 missed.
 
     Args:
         yolo_results: list of detection lists, one per mosaic image
@@ -102,38 +158,47 @@ def remap_detections(
     cam_detections: dict[str, list[Detection]] = {}
 
     for mosaic_idx, detections in enumerate(yolo_results):
+        # Determine grid size for this mosaic from any tile in it
+        mosaic_grid = 3  # default
+        for info in tile_map:
+            if info.mosaic_idx == mosaic_idx:
+                mosaic_grid = info.grid
+                break
+
+        tile_size = MOSAIC_SIZE // mosaic_grid
+
         for det in detections:
             x1, y1, x2, y2 = det.bbox
 
             # Determine which tile this detection belongs to (by bbox center)
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
-            col = min(int(cx // TILE_SIZE), GRID - 1)
-            row = min(int(cy // TILE_SIZE), GRID - 1)
+            col = min(int(cx // tile_size), mosaic_grid - 1)
+            row = min(int(cy // tile_size), mosaic_grid - 1)
 
             info = tile_lookup.get((mosaic_idx, row, col))
             if info is None:
                 continue  # empty tile slot
 
             # Convert mosaic coords -> tile-local coords
-            local_x1 = x1 - col * TILE_SIZE
-            local_y1 = y1 - row * TILE_SIZE
-            local_x2 = x2 - col * TILE_SIZE
-            local_y2 = y2 - row * TILE_SIZE
+            local_x1 = x1 - col * tile_size
+            local_y1 = y1 - row * tile_size
+            local_x2 = x2 - col * tile_size
+            local_y2 = y2 - row * tile_size
 
             # Clamp to tile bounds
-            local_x1 = max(0.0, min(local_x1, TILE_SIZE))
-            local_y1 = max(0.0, min(local_y1, TILE_SIZE))
-            local_x2 = max(0.0, min(local_x2, TILE_SIZE))
-            local_y2 = max(0.0, min(local_y2, TILE_SIZE))
+            local_x1 = max(0.0, min(local_x1, tile_size))
+            local_y1 = max(0.0, min(local_y1, tile_size))
+            local_x2 = max(0.0, min(local_x2, tile_size))
+            local_y2 = max(0.0, min(local_y2, tile_size))
 
             # Skip tiny fragments (bbox spanning tile border)
             if (local_x2 - local_x1) < 4 or (local_y2 - local_y1) < 4:
                 continue
 
             # Scale tile coords -> original frame coords
-            sx = info.orig_w / TILE_SIZE
-            sy = info.orig_h / TILE_SIZE
+            sx = info.orig_w / tile_size
+            sy = info.orig_h / tile_size
 
             remapped = Detection(
                 bbox=(local_x1 * sx, local_y1 * sy, local_x2 * sx, local_y2 * sy),
