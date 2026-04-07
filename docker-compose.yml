@@ -68,6 +68,7 @@ services:
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.05}
       - GO2RTC_URL=http://localhost:1984
       - DEVICE=${DEVICE:-auto}
+      - SKIP_TENSORRT=${SKIP_TENSORRT:-0}
       - RING_BUFFER_SECONDS=${RING_BUFFER_SECONDS:-15}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
