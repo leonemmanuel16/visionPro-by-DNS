@@ -565,10 +565,11 @@ class DetectorService:
                                      count_ba=lc_counters[tw_id].get("B→A", 0))
                         lc_state[tw_id][det.tracker_id] = side
 
-        # ── Publish real-time tracking (ALL tracked, not zone-filtered) ──
+        # ── Publish real-time tracking (zone-filtered if zones exist) ──
+        display_dets = filtered if zones else tracked
         h, w = frame.shape[:2]
         tracks = []
-        for d in tracked:
+        for d in display_dets:
             x1, y1, x2, y2 = d.bbox
             track = {
                 "id": f"t{d.tracker_id}",
