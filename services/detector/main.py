@@ -66,7 +66,7 @@ class DetectorService:
         self.minio_endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
         self.minio_access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
         self.minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-        self.model_name = os.environ.get("MODEL_NAME", "yolo11s-p2")
+        self.model_name = os.environ.get("MODEL_NAME", "yolo11s")
         self.detection_fps = int(os.environ.get("DETECTION_FPS", "15"))
         self.confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.05"))
         self.go2rtc_url = os.environ.get("GO2RTC_URL", "http://localhost:1984")
@@ -112,7 +112,7 @@ class DetectorService:
 
     async def start(self):
         log.info("detector.starting", model=self.model_name, fps=self.detection_fps,
-                 architecture="mosaic_3x3")
+                 architecture="adaptive_mosaic")
 
         # Connect to databases
         self.db_pool = await asyncpg.create_pool(

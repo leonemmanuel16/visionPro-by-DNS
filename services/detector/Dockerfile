@@ -43,17 +43,17 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Pre-download YOLO models
-# yolo11s-p2: P2 head for small object detection (faces, plates in CCTV)
-# yolo26s: fallback if p2 variant unavailable
-# TensorRT engine built at first GPU run (~3-5 min, cached in volume)
+# yolo11s: YOLO v11 Small — good balance of speed and accuracy for CCTV
+# yolo11n: nano fallback if Small doesn't fit in VRAM
+# TensorRT FP16 engine built at first GPU run (~3-5 min, cached in volume)
 RUN python3 -c "\
 from ultralytics import YOLO; \
-print('Downloading yolo11s-p2 (P2 small-object head)...'); \
-m = YOLO('yolo11s-p2.pt'); \
-print('yolo11s-p2.pt downloaded successfully'); \
-print('Downloading yolo26s (fallback)...'); \
-m2 = YOLO('yolo26s.pt'); \
-print('yolo26s.pt downloaded successfully'); \
+print('Downloading yolo11s...'); \
+m = YOLO('yolo11s.pt'); \
+print('yolo11s.pt downloaded successfully'); \
+print('Downloading yolo11n (fallback)...'); \
+m2 = YOLO('yolo11n.pt'); \
+print('yolo11n.pt downloaded successfully'); \
 " || echo "Model download failed (will retry at runtime)"
 
 CMD ["python3", "main.py"]

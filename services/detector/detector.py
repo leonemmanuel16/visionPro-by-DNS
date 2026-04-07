@@ -56,14 +56,14 @@ class YOLODetector:
     }
 
     # Fallback model order if primary fails (larger -> smaller)
-    MODEL_FALLBACKS = ["yolo11s-p2", "yolo11n-p2", "yolo11s", "yolo26s"]
+    MODEL_FALLBACKS = ["yolo11s", "yolo11n", "yolo26s"]
 
     # Max batch size for TensorRT dynamic batching
     ENGINE_MAX_BATCH = 16
 
     def __init__(
         self,
-        model_name: str = "yolo26s",
+        model_name: str = "yolo11s",
         confidence: float = 0.5,
         device: str = "auto",
     ):
