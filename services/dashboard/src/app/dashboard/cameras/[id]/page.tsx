@@ -217,6 +217,17 @@ export default function CameraDetailPage() {
 
   const go2rtcUrl = getGo2rtcUrl();
 
+  // Sort cameras: current first, then alphabetical (must be before early returns)
+  const sortedCameras = useMemo(() => {
+    return [...allCameras].sort((a, b) => {
+      if (a.id === id) return -1;
+      if (b.id === id) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [allCameras, id]);
+
+  const currentCamIndex = sortedCameras.findIndex(c => c.id === id);
+
   // ── Load camera + zones ──
   useEffect(() => {
     if (isLegacyId(id)) {
@@ -540,18 +551,6 @@ export default function CameraDetailPage() {
   });
 
   const drawColor = selectedDef ? getZoneColor(allZonePolygons.length).stroke : "#2563eb";
-
-  // Sort cameras: current first, then alphabetical
-  const sortedCameras = useMemo(() => {
-    return [...allCameras].sort((a, b) => {
-      if (a.id === id) return -1;
-      if (b.id === id) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [allCameras, id]);
-
-  // Find current camera index for prev/next
-  const currentCamIndex = sortedCameras.findIndex(c => c.id === id);
 
   return (
     <>
