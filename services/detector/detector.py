@@ -56,7 +56,7 @@ class YOLODetector:
     }
 
     # Fallback model order if primary fails (larger -> smaller)
-    MODEL_FALLBACKS = ["yolo26s", "yolo26n", "yolo11s"]
+    MODEL_FALLBACKS = ["yolo11s-p2", "yolo11n-p2", "yolo11s", "yolo26s"]
 
     # Max batch size for TensorRT dynamic batching
     ENGINE_MAX_BATCH = 16
@@ -91,11 +91,12 @@ class YOLODetector:
         # Try loading model: TensorRT engine > PyTorch .pt with FP16
         self.model = self._load_model(model_name)
 
-        # Warm up (multiple passes for GPU to optimize kernels)
-        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        # Warm up at both resolutions (640 for 3x3 mosaics, 960 for 2x2 mosaics)
         warmup_passes = 3 if self.device == "cuda" else 1
-        for _ in range(warmup_passes):
-            self.model.predict(dummy, verbose=False, half=self.use_half)
+        for size in [640, 960]:
+            dummy = np.zeros((size, size, 3), dtype=np.uint8)
+            for _ in range(warmup_passes):
+                self.model.predict(dummy, verbose=False, half=self.use_half)
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
@@ -195,6 +196,7 @@ class YOLODetector:
                 format="engine",
                 half=True,
                 device=0,
+                imgsz=960,   # Export at max resolution (supports 640 and 960 inputs)
                 batch=self.ENGINE_MAX_BATCH,
                 dynamic=True,
             )

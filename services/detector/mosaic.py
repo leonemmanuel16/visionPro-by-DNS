@@ -1,13 +1,13 @@
 """Adaptive Mosaic Builder — Variable grid sizes for optimal YOLO inference.
 
 Strategy based on active camera count:
-  ≤4  cameras: 1x 2x2  (1 inference,  320px/tile — best detail)
-  5-8 cameras: 2x 2x2  (2 inferences, 320px/tile)
-  9+  cameras: Nx 3x3  (N inferences, 213px/tile)
-              + 1x 2x2 for cameras with recent motion (higher detail re-scan)
+  ≤4  cameras: 1x 2x2 @ 960  (1 inference,  480px/tile — max detail)
+  5-8 cameras: 2x 2x2 @ 960  (2 inferences, 480px/tile)
+  9+  cameras: Nx 3x3 @ 640  (N inferences, 213px/tile — fast coverage)
+              + 1x 2x2 @ 960 for cameras with recent motion (hi-res re-scan)
 
-The motion-priority 2x2 gives cameras that had detections in the previous
-cycle a second pass at 50% higher resolution per tile (320px vs 213px).
+The 2x2 mosaics use 960x960 (each tile = 480px) for maximum detail on
+faces, plates, and small objects. The 3x3 mosaics stay at 640x640 for speed.
 """
 
 from dataclasses import dataclass
@@ -15,7 +15,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-MOSAIC_SIZE = 640
+MOSAIC_SIZE_3x3 = 640   # 3x3 grid: 213px per tile (fast coverage)
+MOSAIC_SIZE_2x2 = 960   # 2x2 grid: 480px per tile (hi-res detail)
 
 
 @dataclass
@@ -25,7 +26,8 @@ class TileInfo:
     mosaic_idx: int
     row: int
     col: int
-    grid: int       # 2 or 3 (grid size used for this mosaic)
+    grid: int           # 2 or 3 (grid size used for this mosaic)
+    mosaic_size: int     # 640 or 960 (total mosaic resolution)
     orig_h: int
     orig_w: int
 
@@ -36,9 +38,14 @@ def _build_single_mosaic(
     grid: int,
     mosaic_idx: int,
 ) -> tuple[np.ndarray, list[TileInfo]]:
-    """Build one mosaic image with the given grid size."""
-    tile_size = MOSAIC_SIZE // grid
-    mosaic = np.zeros((MOSAIC_SIZE, MOSAIC_SIZE, 3), dtype=np.uint8)
+    """Build one mosaic image with the given grid size.
+
+    2x2 grids use 960x960 (480px/tile) for maximum detail.
+    3x3 grids use 640x640 (213px/tile) for fast coverage.
+    """
+    mosaic_size = MOSAIC_SIZE_2x2 if grid == 2 else MOSAIC_SIZE_3x3
+    tile_size = mosaic_size // grid
+    mosaic = np.zeros((mosaic_size, mosaic_size, 3), dtype=np.uint8)
     tile_map: list[TileInfo] = []
 
     for i, cam_id in enumerate(cam_ids):
@@ -63,6 +70,7 @@ def _build_single_mosaic(
             row=row,
             col=col,
             grid=grid,
+            mosaic_size=mosaic_size,
             orig_h=orig_h,
             orig_w=orig_w,
         ))
@@ -158,14 +166,16 @@ def remap_detections(
     cam_detections: dict[str, list[Detection]] = {}
 
     for mosaic_idx, detections in enumerate(yolo_results):
-        # Determine grid size for this mosaic from any tile in it
-        mosaic_grid = 3  # default
+        # Determine grid size and mosaic resolution from any tile in this mosaic
+        mosaic_grid = 3
+        mosaic_size = MOSAIC_SIZE_3x3
         for info in tile_map:
             if info.mosaic_idx == mosaic_idx:
                 mosaic_grid = info.grid
+                mosaic_size = info.mosaic_size
                 break
 
-        tile_size = MOSAIC_SIZE // mosaic_grid
+        tile_size = mosaic_size // mosaic_grid
 
         for det in detections:
             x1, y1, x2, y2 = det.bbox
