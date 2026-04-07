@@ -28,10 +28,10 @@ log = structlog.get_logger()
 # ── Configuration ──
 RECORDINGS_DIR = Path(os.environ.get("RECORDINGS_DIR", "/recordings"))
 GO2RTC_CONFIG = os.environ.get("GO2RTC_CONFIG_PATH", "/config/go2rtc.yaml")
+GO2RTC_RTSP = os.environ.get("GO2RTC_RTSP", "rtsp://127.0.0.1:8554")
 SEGMENT_MINUTES = int(os.environ.get("SEGMENT_MINUTES", "15"))
 RETENTION_HOURS = int(os.environ.get("RETENTION_HOURS", "48"))
 CLEANUP_INTERVAL = int(os.environ.get("CLEANUP_INTERVAL", "3600"))  # 1 hour
-NVR_HOST = os.environ.get("NVR_HOST", "192.168.8.3")
 
 # ── Globals ──
 running = True
@@ -39,18 +39,23 @@ processes: dict[str, subprocess.Popen] = {}
 
 
 def load_cameras() -> dict[str, str]:
-    """Load camera streams from go2rtc config. Returns {cam_name: rtsp_url}."""
+    """Load camera streams from go2rtc config.
+
+    Returns {cam_name: go2rtc_rtsp_url}.
+    Uses go2rtc's RTSP re-stream (localhost:8554) instead of direct NVR —
+    more stable, go2rtc handles reconnections and buffering.
+    """
     try:
         with open(GO2RTC_CONFIG, "r") as f:
             config = yaml.safe_load(f)
         streams = config.get("streams", {})
         cameras = {}
-        for name, sources in streams.items():
+        for name in streams:
             # Only main streams (no _sub suffix)
             if name.endswith("_sub"):
                 continue
-            if sources and isinstance(sources, list):
-                cameras[name] = sources[0]
+            # Use go2rtc RTSP proxy: rtsp://127.0.0.1:8554/{stream_name}
+            cameras[name] = f"{GO2RTC_RTSP}/{name}"
         return cameras
     except Exception as e:
         log.error("recorder.config_load_failed", error=str(e))
@@ -91,9 +96,9 @@ def start_ffmpeg(cam_name: str, rtsp_url: str) -> subprocess.Popen | None:
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "warning",
-        # Input: RTSP from go2rtc (re-streamed, more stable than direct NVR)
+        # Input: RTSP from go2rtc (re-streamed, stable proxy)
         "-rtsp_transport", "tcp",
-        "-timeout", "10000000",  # 10s connection timeout
+        "-stimeout", "10000000",  # 10s connection timeout (microseconds)
         "-i", rtsp_url,
         # Output: segmented MP4, stream copy (no re-encoding)
         "-c", "copy",
