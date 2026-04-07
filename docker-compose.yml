@@ -119,6 +119,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config:/config
+      - ./data/recordings:/app/data/recordings:ro
     depends_on:
       - postgres
       - redis
@@ -135,6 +136,21 @@ services:
       - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-}
     depends_on:
       - api
+
+  recorder:
+    build: ./services/recorder
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GO2RTC_CONFIG_PATH=/config/go2rtc.yaml
+      - RECORDINGS_DIR=/recordings
+      - SEGMENT_MINUTES=${SEGMENT_MINUTES:-15}
+      - RETENTION_HOURS=${RETENTION_HOURS:-48}
+    volumes:
+      - ./config:/config:ro
+      - ./data/recordings:/recordings
+    depends_on:
+      - go2rtc
 
   postgres:
     image: pgvector/pgvector:pg16
