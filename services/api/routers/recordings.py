@@ -6,6 +6,9 @@ Provides endpoints to:
 - Get recording status and disk usage
 """
 
+import asyncio
+import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -115,8 +118,13 @@ async def recording_status():
 
 
 @router.get("/{camera_name}/{date}/{filename}")
-async def download_recording(camera_name: str, date: str, filename: str):
-    """Download or stream a specific recording segment."""
+async def stream_recording(camera_name: str, date: str, filename: str):
+    """Stream a recording segment, transcoding H.265→H.264 on-the-fly for browser compatibility.
+
+    Chrome/Firefox don't support H.265 (HEVC) natively. This endpoint uses FFmpeg
+    to transcode to H.264 in real-time and streams the result. The transcoding is
+    fast because it only happens for the segment being watched (~15 min max).
+    """
     file_path = RECORDINGS_DIR / camera_name / date / filename
 
     if not file_path.exists():
@@ -126,6 +134,87 @@ async def download_recording(camera_name: str, date: str, filename: str):
         raise HTTPException(status_code=400, detail="Invalid file type")
 
     # Security: ensure path doesn't escape recordings dir
+    try:
+        file_path.resolve().relative_to(RECORDINGS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check if file is H.265 — if not, serve directly
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0",
+             str(file_path)],
+            capture_output=True, text=True, timeout=5
+        )
+        codec = probe.stdout.strip()
+    except Exception:
+        codec = "hevc"  # assume H.265 if probe fails
+
+    if codec != "hevc":
+        # H.264 or other browser-compatible codec — serve directly
+        return FileResponse(
+            path=str(file_path),
+            media_type="video/mp4",
+            filename=f"{camera_name}_{date}_{filename}",
+        )
+
+    # H.265 → transcode to H.264 on-the-fly via FFmpeg
+    # -c:v libx264 -preset ultrafast -crf 23 = fast transcode, decent quality
+    # -c:a copy = keep audio as-is
+    # -movflags frag_keyframe+empty_moov = streamable MP4 (no seek to end)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", str(file_path),
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-c:a", "copy",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    def generate():
+        try:
+            while True:
+                chunk = process.stdout.read(65536)  # 64KB chunks
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            process.stdout.close()
+            process.wait()
+
+    return StreamingResponse(
+        generate(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f'inline; filename="{camera_name}_{date}_{filename}"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@router.get("/{camera_name}/{date}/{filename}/download")
+async def download_recording(camera_name: str, date: str, filename: str):
+    """Download the original H.265 recording file (no transcoding)."""
+    file_path = RECORDINGS_DIR / camera_name / date / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    if not file_path.suffix == ".mp4":
+        raise HTTPException(status_code=400, detail="Invalid file type")
+
     try:
         file_path.resolve().relative_to(RECORDINGS_DIR.resolve())
     except ValueError:
