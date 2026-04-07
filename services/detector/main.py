@@ -386,8 +386,7 @@ class DetectorService:
         if not tracker or not best_shot or not ring_buffer:
             return
 
-        # Push frame to ring buffer (for video clips)
-        ring_buffer.push(frame)
+        # NOTE: ring_buffer.push() moved AFTER tracking so we can annotate frames
 
         # ── Class filtering ──
         pre_filter_count = len(detections)
@@ -602,6 +601,46 @@ class DetectorService:
             tracking_msg["line_counts"] = lc_counters
 
         await self.redis.publish("tracking", json.dumps(tracking_msg))
+
+        # ── Push ANNOTATED frame to ring buffer (for video clips) ──
+        annotated = frame.copy()
+        for d in tracked:
+            x1, y1, x2, y2 = [int(c) for c in d.bbox]
+            label = d.label.split(":")[0]
+            meta = d.metadata or {}
+            person_name = meta.get("person_name")
+
+            # Color per class
+            if label == "person":
+                color = (0, 255, 0)
+            elif label in ("car", "truck", "bus", "motorcycle", "bicycle"):
+                color = (0, 200, 255)
+            else:
+                color = (255, 100, 0)
+
+            # Bounding box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+            # Label text
+            if person_name:
+                lbl = person_name
+            else:
+                vtype = meta.get("vehicle_type", "")
+                vcolor = meta.get("vehicle_color", "")
+                if vtype and vcolor:
+                    lbl = f"{vtype} {vcolor}"
+                else:
+                    lbl = f"{label} #{d.tracker_id}"
+
+            # Draw label background + text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            (tw, th), _ = cv2.getTextSize(lbl, font, font_scale, thickness)
+            cv2.rectangle(annotated, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(annotated, lbl, (x1 + 2, y1 - 4), font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
+
+        ring_buffer.push(annotated)
 
         # ── Best-shot: feed zone-filtered detections ──
         best_shot.cleanup()

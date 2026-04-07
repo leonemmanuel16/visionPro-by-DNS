@@ -447,8 +447,17 @@ class EventPublisher:
             thickness = max(2, int(min(w_frame, h_frame) / 500))
             font_scale = max(0.6, min(w_frame, h_frame) / 1500)
 
-            # Draw person/vehicle bounding box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), thickness)
+            # Color per class
+            base_label = detection.label.split(":")[0]
+            if base_label == "person":
+                box_color = (0, 255, 0)
+            elif base_label in ("car", "truck", "bus", "motorcycle", "bicycle"):
+                box_color = (0, 200, 255)
+            else:
+                box_color = (255, 100, 0)
+
+            # Draw bounding box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, thickness)
 
             # Draw face rectangle and name if detected
             meta = detection.metadata or {}
@@ -456,29 +465,36 @@ class EventPublisher:
             face_bbox = meta.get("face_bbox")
 
             if face_bbox:
-                # face_bbox is (top, right, bottom, left) from InsightFace
                 ft, fr, fb, fl = [int(c) for c in face_bbox]
                 cv2.rectangle(annotated, (fl, ft), (fr, fb), (255, 200, 0), thickness)
                 if person_name:
+                    label_y = max(ft - 10, int(font_scale * 20) + 5)
                     cv2.putText(
-                        annotated, person_name, (fl, ft - 10),
+                        annotated, person_name, (fl, label_y),
                         cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.2, (255, 200, 0), thickness,
                     )
 
-            # Label text
-            label_text = person_name or f"{detection.label} {detection.confidence:.0%}"
-            cv2.putText(
-                annotated, label_text, (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness,
-            )
+            # Label text — build comprehensive label
+            vtype = meta.get("vehicle_type", "")
+            vcolor = meta.get("vehicle_color", "")
+            if person_name:
+                label_text = person_name
+            elif vtype and vcolor:
+                label_text = f"{vtype} {vcolor} {detection.confidence:.0%}"
+            else:
+                label_text = f"{detection.label} {detection.confidence:.0%}"
 
-            # Vehicle attributes text
-            if meta.get("vehicle_color") and meta.get("vehicle_type"):
-                veh_text = f"{meta['vehicle_type']} {meta['vehicle_color']}"
-                cv2.putText(
-                    annotated, veh_text, (x1, y2 + int(25 * font_scale)),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.8, (0, 200, 255), thickness,
-                )
+            # Position label INSIDE bbox top if too close to frame edge
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, thickness)
+            if y1 - th - 8 < 0:
+                # Draw inside top of bbox
+                cv2.rectangle(annotated, (x1, y1), (x1 + tw + 8, y1 + th + 8), box_color, -1)
+                cv2.putText(annotated, label_text, (x1 + 4, y1 + th + 4), font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
+            else:
+                # Draw above bbox with background
+                cv2.rectangle(annotated, (x1, y1 - th - 8), (x1 + tw + 8, y1), box_color, -1)
+                cv2.putText(annotated, label_text, (x1 + 4, y1 - 4), font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
             apply_watermark(annotated)
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
             data = buffer.tobytes()
