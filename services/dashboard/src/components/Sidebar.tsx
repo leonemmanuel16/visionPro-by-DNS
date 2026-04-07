@@ -12,6 +12,7 @@ import {
   Flame,
   Route,
   HeartPulse,
+  Film,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useRef } from "react";
@@ -20,6 +21,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/cameras", label: "Camaras", icon: Camera },
   { href: "/dashboard/events", label: "Eventos", icon: Activity },
+  { href: "/dashboard/recordings", label: "Grabaciones", icon: Film },
   { href: "/dashboard/alerts", label: "Alertas", icon: Bell },
   { href: "/dashboard/heatmap", label: "Mapa de Calor", icon: Flame },
   { href: "/dashboard/traffic", label: "Trafico", icon: Route },
