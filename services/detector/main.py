@@ -22,6 +22,7 @@ import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import cv2
 import asyncpg
 import numpy as np
 import redis.asyncio as aioredis
