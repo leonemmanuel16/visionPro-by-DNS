@@ -1,13 +1,13 @@
 """Adaptive Mosaic Builder — Variable grid sizes for optimal YOLO inference.
 
 Strategy based on active camera count:
-  1   camera:   Full frame @ 960    (1 inference, 960x540 letterbox — max detail)
-  2   cameras:  Split vertical @960  (1 inference, 960x480 per cam)
-  3-4 cameras:  1x 2x2 @ 960       (1 inference, 480px/tile)
-  5-8 cameras:  2x 2x2 @ 960       (2 inferences, 480px/tile)
-  9   cameras:  1x 3x3 @ 640       (1 inference, 213px/tile)
+  1   camera:   Full frame @960     (1 inference, ~960x540 letterbox — max detail)
+  2   cameras:  Split vertical @960 (1 inference, ~853x480 per cam)
+  3-4 cameras:  1x 2x2 @960        (1 inference, 480px/tile)
+  5-8 cameras:  2x 2x2 @960        (2 inferences, 480px/tile)
+  9   cameras:  1x 3x3 @640        (1 inference, 213px/tile)
   10-13 cameras: 1x 3x3 + 1x 2x2  (2 inferences, mixed resolution)
-  14-18 cameras: 2x 3x3 @ 640      (2 inferences, 213px/tile)
+  14-18 cameras: 2x 3x3 @640       (2 inferences, 213px/tile)
 
 All tiles use letterboxing (aspect ratio preserved, black padding) to avoid
 distortion that kills person detection from overhead camera angles.
@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 MOSAIC_SIZE_3x3 = 640   # 3x3 grid: 213px per tile (fast coverage)
-MOSAIC_SIZE_2x2 = 1280  # 2x2 grid: 640px per tile (hi-res detail)
+MOSAIC_SIZE_2x2 = 960   # 2x2 grid: 480px per tile (hi-res detail)
 
 
 @dataclass
