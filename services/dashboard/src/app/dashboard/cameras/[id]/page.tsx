@@ -62,6 +62,7 @@ interface CameraDetail {
   last_seen_at?: string;
   port?: number;
   camera_type?: string;
+  config?: { detect_classes?: string[]; image_settings?: Record<string, any>; [key: string]: any };
 }
 
 interface Point { x: number; y: number; }
@@ -236,14 +237,31 @@ export default function CameraDetailPage() {
       return;
     }
     api.get<CameraDetail>(`/cameras/${id}`).then((data) => {
-      if (data && (data as any).id) setCamera(data);
-      else {
+      if (data && (data as any).id) {
+        setCamera(data);
+        // Load enabledDetections from API (camera.config.detect_classes) — single source of truth
+        const apiDetections: string[] = data.config?.detect_classes || [];
+        const validIds = DETECTION_CAPABILITIES.map(c => c.id);
+        const cleaned = [...new Set(apiDetections.filter((d: string) => validIds.includes(d)))];
+        setEnabledDetections(cleaned);
+        localStorage.setItem(`cam_detections_${id}`, JSON.stringify(cleaned));
+      } else {
         const c = loadLS(id);
         if (c) setCamera(c); else setNotFound(true);
       }
     }).catch(() => {
       const c = loadLS(id);
       if (c) setCamera(c); else setNotFound(true);
+      // Fallback: load from localStorage only if API fails
+      try {
+        const sd = localStorage.getItem(`cam_detections_${id}`);
+        if (sd) {
+          const parsed: string[] = JSON.parse(sd);
+          const validIds = DETECTION_CAPABILITIES.map(c => c.id);
+          const cleaned = [...new Set(parsed.filter(d => validIds.includes(d)))];
+          setEnabledDetections(cleaned);
+        }
+      } catch (_e) {}
     });
 
     if (isValidUUID(id)) {
@@ -269,8 +287,6 @@ export default function CameraDetailPage() {
     }
 
     try {
-      const sd = localStorage.getItem(`cam_detections_${id}`);
-      if (sd) setEnabledDetections(JSON.parse(sd));
       const si = localStorage.getItem(`cam_image_${id}`);
       if (si) setImageSettings(JSON.parse(si));
       const sz = localStorage.getItem(`cam_zones_v2_${id}`);
@@ -335,11 +351,13 @@ export default function CameraDetailPage() {
   // ── Toggle detection ──
   const toggleDetection = (detId: string) => {
     markDirty();
-    const wasEnabled = enabledDetections.includes(detId);
+    const wasEnabled = enabledDetections.includes(detId); // for UI selection logic only
     setEnabledDetections((prev) => {
-      let next = wasEnabled ? prev.filter((d) => d !== detId) : [...prev, detId];
+      // Use prev (actual current state) to avoid stale closure / duplicate entries
+      const actuallyEnabled = prev.includes(detId);
+      let next = actuallyEnabled ? prev.filter((d) => d !== detId) : [...prev, detId];
       // person_count requires line_crossing
-      if (detId === "person_count" && !wasEnabled && !next.includes("line_crossing")) {
+      if (detId === "person_count" && !actuallyEnabled && !next.includes("line_crossing")) {
         next = [...next, "line_crossing"];
       }
       const shouldBeOn = next.length > 0;

@@ -214,19 +214,28 @@ class DetectorService:
             cam_id = str(cam["id"])
             enabled_ids.add(cam_id)
 
-            if cam_id in self.cam_streams:
-                continue  # already tracked
-
-            cam_id_short = cam_id.replace("-", "")[:12]
-            stream_name = f"cam_{cam_id_short}_sub"
-
-            # Parse per-camera config
+            # Parse per-camera config (needed for both new and existing cameras)
             cam_config = cam.get("config") or {}
             if isinstance(cam_config, str):
                 try:
                     cam_config = json.loads(cam_config)
                 except Exception:
                     cam_config = {}
+
+            if cam_id in self.cam_streams:
+                # Already tracked — update mutable config (detect_classes, name)
+                new_classes = cam_config.get("detect_classes", None)
+                old_classes = self.cam_detect_classes.get(cam_id)
+                if new_classes != old_classes:
+                    log.info("detector.config_updated", camera_id=cam_id,
+                             name=cam["name"], old_classes=old_classes,
+                             new_classes=new_classes)
+                    self.cam_detect_classes[cam_id] = new_classes
+                self.cam_names[cam_id] = cam["name"] or "unknown"
+                continue
+
+            cam_id_short = cam_id.replace("-", "")[:12]
+            stream_name = f"cam_{cam_id_short}_sub"
 
             self.cam_streams[cam_id] = stream_name
             self.cam_main_streams[cam_id] = f"cam_{cam_id_short}"  # main 4MP stream

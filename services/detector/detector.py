@@ -196,7 +196,7 @@ class YOLODetector:
                 format="engine",
                 half=True,
                 device=0,
-                imgsz=960,   # Export at max resolution (supports 640 and 960 inputs)
+                imgsz=1280,  # Export at max resolution (supports 640, 960 and 1280 inputs)
                 batch=self.ENGINE_MAX_BATCH,
                 dynamic=True,
             )
