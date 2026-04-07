@@ -139,7 +139,8 @@ class YOLODetector:
             if pt_model is None:
                 continue
 
-            if self.device == "cuda":
+            skip_trt = os.environ.get("SKIP_TENSORRT", "").lower() in ("1", "true", "yes")
+            if self.device == "cuda" and not skip_trt:
                 engine_model = self._try_export_tensorrt(pt_model, name)
                 if engine_model is not None:
                     return engine_model
