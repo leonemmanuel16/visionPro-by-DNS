@@ -295,11 +295,13 @@ def remap_detections(
                 sx = info.orig_w / tile_size
                 sy = info.orig_h / tile_size
 
-            # Clamp after letterbox adjustment
-            local_x1 = max(0.0, local_x1)
-            local_y1 = max(0.0, local_y1)
-            local_x2 = max(0.0, local_x2)
-            local_y2 = max(0.0, local_y2)
+            # Clamp to content area (letterbox bounds)
+            max_w = info.lb_w if info.lb_w > 0 else tile_size
+            max_h = info.lb_h if info.lb_h > 0 else tile_size
+            local_x1 = max(0.0, min(local_x1, max_w))
+            local_y1 = max(0.0, min(local_y1, max_h))
+            local_x2 = max(0.0, min(local_x2, max_w))
+            local_y2 = max(0.0, min(local_y2, max_h))
 
             remapped = Detection(
                 bbox=(local_x1 * sx, local_y1 * sy, local_x2 * sx, local_y2 * sy),
