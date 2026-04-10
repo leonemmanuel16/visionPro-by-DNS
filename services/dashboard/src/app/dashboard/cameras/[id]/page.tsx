@@ -656,15 +656,15 @@ export default function CameraDetailPage() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* ── LEFT: Video feed ── */}
         <div className={`transition-all duration-300 ${panelCollapsed ? "flex-1" : "w-[60%]"} p-4 flex flex-col`}>
-          <div className="relative rounded-lg overflow-hidden border border-gray-200 flex-1">
+          <div className="rounded-lg overflow-hidden border border-gray-200 flex-1 flex items-start">
             {camera.camera_type === "fisheye" ? (
               <FisheyeDewarper cameraName={streamName} isOnline={camera.is_online} />
             ) : (
-              <>
+              <div className="relative w-full aspect-video">
                 <SnapshotPlayer
                   cameraName={streamName}
                   isOnline={camera.is_online}
-                  className="aspect-video w-full"
+                  className="w-full h-full"
                   intervalMs={67}
                   width={1920}
                   useMainStream={true}
@@ -703,37 +703,36 @@ export default function CameraDetailPage() {
                 {camera.is_online && liveDetections.length > 0 && (
                   <DetectionOverlay detections={liveDetections} className="z-20" />
                 )}
-              </>
-            )}
 
-            {/* Drawing toolbar on video */}
-            {isDrawing && (
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/70 rounded-lg px-4 py-2 backdrop-blur">
-                <span className="text-white text-xs font-medium">{drawingPoints.length} puntos</span>
-                <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
-                  onClick={() => setDrawingPoints((p) => p.slice(0, -1))} disabled={drawingPoints.length === 0}>
-                  <Undo className="h-3 w-3 mr-1" /> Deshacer
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
-                  onClick={cancelDrawing}>
-                  <XCircle className="h-3 w-3 mr-1" /> Cancelar
-                </Button>
-                <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700"
-                  onClick={saveCurrentZone} disabled={drawingPoints.length < (selectedDetection === "line_crossing" ? 2 : 3)}>
-                  <Save className="h-3 w-3 mr-1" /> {selectedDetection === "line_crossing" ? "Guardar Linea" : "Guardar Zona"}
-                </Button>
+                {/* Drawing toolbar on video */}
+                {isDrawing && (
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/70 rounded-lg px-4 py-2 backdrop-blur">
+                    <span className="text-white text-xs font-medium">{drawingPoints.length} puntos</span>
+                    <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
+                      onClick={() => setDrawingPoints((p) => p.slice(0, -1))} disabled={drawingPoints.length === 0}>
+                      <Undo className="h-3 w-3 mr-1" /> Deshacer
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs border-gray-500 text-white hover:bg-white/20"
+                      onClick={cancelDrawing}>
+                      <XCircle className="h-3 w-3 mr-1" /> Cancelar
+                    </Button>
+                    <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700"
+                      onClick={saveCurrentZone} disabled={drawingPoints.length < (selectedDetection === "line_crossing" ? 2 : 3)}>
+                      <Save className="h-3 w-3 mr-1" /> {selectedDetection === "line_crossing" ? "Guardar Linea" : "Guardar Zona"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Collapse/expand panel toggle on video corner */}
+                <button
+                  onClick={() => setPanelCollapsed(!panelCollapsed)}
+                  className="absolute top-2 left-2 z-20 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white backdrop-blur transition-colors"
+                  title={panelCollapsed ? "Mostrar panel" : "Maximizar video"}
+                >
+                  {panelCollapsed ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                </button>
               </div>
             )}
-
-            {/* Collapse/expand panel toggle on video corner */}
-            <button
-              onClick={() => setPanelCollapsed(!panelCollapsed)}
-              className="absolute top-2 left-2 z-20 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white backdrop-blur transition-colors"
-              title={panelCollapsed ? "Mostrar panel" : "Maximizar video"}
-            >
-              {panelCollapsed ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-            </button>
-          </div>
 
           {/* Camera info bar below video */}
           <div className="flex items-center gap-4 mt-2 px-1 text-xs text-gray-400">
