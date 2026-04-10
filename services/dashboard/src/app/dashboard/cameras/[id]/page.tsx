@@ -242,7 +242,7 @@ export default function CameraDetailPage() {
         // Load enabledDetections from API (camera.config.detect_classes) — single source of truth
         const apiDetections: string[] = data.config?.detect_classes || [];
         const validIds = DETECTION_CAPABILITIES.map(c => c.id);
-        const cleaned = [...new Set(apiDetections.filter((d: string) => validIds.includes(d)))];
+        const cleaned = Array.from(new Set(apiDetections.filter((d: string) => validIds.includes(d))));
         setEnabledDetections(cleaned);
         localStorage.setItem(`cam_detections_${id}`, JSON.stringify(cleaned));
       } else {
