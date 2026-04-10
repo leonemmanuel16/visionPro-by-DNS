@@ -733,6 +733,7 @@ export default function CameraDetailPage() {
                 </button>
               </div>
             )}
+          </div>
 
           {/* Camera info bar below video */}
           <div className="flex items-center gap-4 mt-2 px-1 text-xs text-gray-400">
