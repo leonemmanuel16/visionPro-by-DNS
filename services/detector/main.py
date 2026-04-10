@@ -133,8 +133,9 @@ class DetectorService:
             device=self.device,
         )
 
-        # Initialize go2rtc frame grabber (replaces per-camera RTSP connections)
-        self._grabber = Go2rtcGrabber(self.go2rtc_url, width=640)
+        # Initialize go2rtc frame grabber
+        # Use 960px width so mosaics downscale instead of upscale (more detail for YOLO)
+        self._grabber = Go2rtcGrabber(self.go2rtc_url, width=960)
         await self._grabber.start()
 
         # Initialize event validator
@@ -232,13 +233,32 @@ class DetectorService:
                              new_classes=new_classes)
                     self.cam_detect_classes[cam_id] = new_classes
                 self.cam_names[cam_id] = cam["name"] or "unknown"
+
+                # Switch stream quality based on camera count
+                cam_id_short = cam_id.replace("-", "")[:12]
+                num_enabled = len(enabled_ids)
+                ideal_stream = f"cam_{cam_id_short}" if num_enabled <= 4 else f"cam_{cam_id_short}_sub"
+                if self.cam_streams[cam_id] != ideal_stream:
+                    log.info("detector.stream_switched", camera_id=cam_id,
+                             name=cam["name"], old_stream=self.cam_streams[cam_id],
+                             new_stream=ideal_stream, num_cameras=num_enabled)
+                    self.cam_streams[cam_id] = ideal_stream
+                    # Restart grabber thread for this camera with new stream
+                    self._grabber.stop_camera(cam_id)
+                    self._grabber.start_camera(cam_id, ideal_stream)
                 continue
 
             cam_id_short = cam_id.replace("-", "")[:12]
-            stream_name = f"cam_{cam_id_short}_sub"
+            main_stream = f"cam_{cam_id_short}"
+            sub_stream = f"cam_{cam_id_short}_sub"
+
+            # Use main stream (4MP) for ≤4 cameras — more detail for YOLO
+            # Use sub stream for >4 cameras — lighter network/CPU load
+            num_enabled = len(enabled_ids)
+            stream_name = main_stream if num_enabled <= 4 else sub_stream
 
             self.cam_streams[cam_id] = stream_name
-            self.cam_main_streams[cam_id] = f"cam_{cam_id_short}"  # main 4MP stream
+            self.cam_main_streams[cam_id] = main_stream
             self.cam_names[cam_id] = cam["name"] or "unknown"
             self.cam_trackers[cam_id] = ObjectTracker(frame_rate=self.detection_fps)
             self.cam_best_shots[cam_id] = BestShotSelector(
