@@ -258,7 +258,7 @@ export default function CameraDetailPage() {
         if (sd) {
           const parsed: string[] = JSON.parse(sd);
           const validIds = DETECTION_CAPABILITIES.map(c => c.id);
-          const cleaned = [...new Set(parsed.filter(d => validIds.includes(d)))];
+          const cleaned = Array.from(new Set(parsed.filter(d => validIds.includes(d))));
           setEnabledDetections(cleaned);
         }
       } catch (_e) {}
