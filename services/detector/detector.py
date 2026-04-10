@@ -118,9 +118,13 @@ class YOLODetector:
         self._engine_dynamic = False
         models_to_try = [model_name] + [m for m in self.MODEL_FALLBACKS if m != model_name]
 
+        skip_trt = os.environ.get("SKIP_TENSORRT", "").lower() in ("1", "true", "yes")
+        if skip_trt:
+            log.info("detector.tensorrt_skipped", msg="SKIP_TENSORRT is set, using PyTorch directly")
+
         for name in models_to_try:
-            # 1. Try pre-built TensorRT engine (check persistent volume first, then local)
-            if self.device == "cuda":
+            # 1. Try pre-built TensorRT engine (skip if SKIP_TENSORRT is set)
+            if self.device == "cuda" and not skip_trt:
                 for engine_path in [MODELS_DIR / f"{name}.engine", Path(f"{name}.engine")]:
                     if engine_path.exists():
                         try:
@@ -134,30 +138,27 @@ class YOLODetector:
                         except Exception as e:
                             log.warning("detector.engine_load_failed", model=name, error=str(e))
 
-            # 2. Try loading .pt and exporting to TensorRT
+            # 2. Try loading .pt and optionally exporting to TensorRT
             pt_model = self._load_pt_safe(name)
             if pt_model is None:
                 continue
 
-            skip_trt = os.environ.get("SKIP_TENSORRT", "").lower() in ("1", "true", "yes")
             if self.device == "cuda" and not skip_trt:
                 engine_model = self._try_export_tensorrt(pt_model, name)
                 if engine_model is not None:
                     return engine_model
 
-                # 3. Fallback: use PyTorch .pt with FP16
-                log.info("detector.using_pytorch_fp16", model=name)
-                pt_model.to(self.device)
-                if self.use_half:
-                    try:
-                        pt_model.model.half()
-                        log.info("detector.fp16_enabled", model=name)
-                    except Exception as e:
-                        log.warning("detector.fp16_failed", error=str(e))
-                        self.use_half = False
-                return pt_model
-            else:
-                return pt_model
+            # 3. Use PyTorch with FP16 on GPU (or CPU fallback)
+            log.info("detector.using_pytorch", model=name, device=self.device)
+            pt_model.to(self.device)
+            if self.use_half:
+                try:
+                    pt_model.model.half()
+                    log.info("detector.fp16_enabled", model=name, device=self.device)
+                except Exception as e:
+                    log.warning("detector.fp16_failed", error=str(e))
+                    self.use_half = False
+            return pt_model
 
         raise RuntimeError(f"Could not load any YOLO model. Tried: {models_to_try}")
 
