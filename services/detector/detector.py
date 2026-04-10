@@ -85,18 +85,18 @@ class YOLODetector:
 
         log.info("detector.loading_model", model=model_name, device=self.device)
 
-        # FP16 on CUDA — ~2x speedup on T1000 and similar GPUs
-        self.use_half = self.device == "cuda"
-
-        # Try loading model: TensorRT engine > PyTorch .pt with FP16
+        # Try loading model: TensorRT engine > PyTorch FP32
         self.model = self._load_model(model_name)
+
+        # FP16 only with TensorRT engines (T1000 lacks tensor cores, PyTorch FP16 produces NaN)
+        self.use_half = self._using_engine
 
         # Warm up at both resolutions (640 for 3x3 mosaics, 960 for 2x2 mosaics)
         warmup_passes = 3 if self.device == "cuda" else 1
         for size in [640, 960]:
             dummy = np.zeros((size, size, 3), dtype=np.uint8)
             for _ in range(warmup_passes):
-                self.model.predict(dummy, verbose=False, half=self.use_half)
+                self.model.predict(dummy, verbose=False, half=self.use_half, device=self.device)
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
@@ -148,10 +148,8 @@ class YOLODetector:
                 if engine_model is not None:
                     return engine_model
 
-            # 3. Use PyTorch on GPU (or CPU fallback)
-            # Don't call .half() on the model — it breaks fuse_conv_and_bn().
-            # Instead, let Ultralytics handle FP16 via half=True in .predict()
-            log.info("detector.using_pytorch", model=name, device=self.device, half=self.use_half)
+            # 3. Use PyTorch FP32 on GPU (or CPU fallback)
+            log.info("detector.using_pytorch", model=name, device=self.device)
             pt_model.to(self.device)
             return pt_model
 
@@ -268,6 +266,7 @@ class YOLODetector:
             conf=self.confidence,
             verbose=False,
             half=self.use_half,
+            device=self.device,
             classes=list(self.TARGET_CLASSES.keys()),
         )
 
