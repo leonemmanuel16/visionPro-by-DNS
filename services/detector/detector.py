@@ -148,16 +148,11 @@ class YOLODetector:
                 if engine_model is not None:
                     return engine_model
 
-            # 3. Use PyTorch with FP16 on GPU (or CPU fallback)
-            log.info("detector.using_pytorch", model=name, device=self.device)
+            # 3. Use PyTorch on GPU (or CPU fallback)
+            # Don't call .half() on the model — it breaks fuse_conv_and_bn().
+            # Instead, let Ultralytics handle FP16 via half=True in .predict()
+            log.info("detector.using_pytorch", model=name, device=self.device, half=self.use_half)
             pt_model.to(self.device)
-            if self.use_half:
-                try:
-                    pt_model.model.half()
-                    log.info("detector.fp16_enabled", model=name, device=self.device)
-                except Exception as e:
-                    log.warning("detector.fp16_failed", error=str(e))
-                    self.use_half = False
             return pt_model
 
         raise RuntimeError(f"Could not load any YOLO model. Tried: {models_to_try}")
