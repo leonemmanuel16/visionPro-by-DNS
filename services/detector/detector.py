@@ -96,7 +96,8 @@ class YOLODetector:
         for size in [640, 960]:
             dummy = np.zeros((size, size, 3), dtype=np.uint8)
             for _ in range(warmup_passes):
-                self.model.predict(dummy, verbose=False, half=self.use_half, device=self.device)
+                self.model.predict(dummy, verbose=False, half=self.use_half,
+                                   device=self.device, imgsz=size)
 
         if self.device == "cuda":
             mem_used = torch.cuda.memory_allocated(0) / (1024**2)
@@ -261,12 +262,14 @@ class YOLODetector:
         """Run YOLO inference on a single frame. Returns list of detections."""
         start = time.monotonic()
 
+        input_size = frame.shape[0] if frame.shape[0] in (640, 960) else 640
         results = self.model.predict(
             frame,
             conf=self.confidence,
             verbose=False,
             half=self.use_half,
             device=self.device,
+            imgsz=input_size,
             classes=list(self.TARGET_CLASSES.keys()),
         )
 
@@ -286,11 +289,18 @@ class YOLODetector:
         With dynamic TensorRT engine: TRUE batched GPU inference (1 call for all frames).
         With static engine (batch=1): sequential processing (fallback).
         With PyTorch: native batched inference.
+
+        imgsz is set to match the input frame size (960 for 2x2 mosaics, 640 for 3x3)
+        so YOLO uses the full resolution instead of downscaling to its default 640.
         """
         if not frames:
             return []
 
         start = time.monotonic()
+
+        # Use the actual input size so YOLO doesn't downscale (960 for 2x2, 640 for 3x3)
+        input_size = frames[0].shape[0]  # mosaic is always square
+        imgsz = input_size if input_size in (640, 960) else 640
 
         if self._using_engine and not self._engine_dynamic:
             # Static TensorRT engine (batch=1) — must iterate
@@ -301,6 +311,8 @@ class YOLODetector:
                     conf=self.confidence,
                     verbose=False,
                     half=self.use_half,
+                    device=self.device,
+                    imgsz=imgsz,
                     classes=list(self.TARGET_CLASSES.keys()),
                 )
                 batch_detections.extend(self._parse_results(results))
@@ -317,6 +329,8 @@ class YOLODetector:
                         conf=self.confidence,
                         verbose=False,
                         half=self.use_half,
+                        device=self.device,
+                        imgsz=imgsz,
                         classes=list(self.TARGET_CLASSES.keys()),
                     )
                     batch_detections.extend(self._parse_results(results))
@@ -332,6 +346,8 @@ class YOLODetector:
                                 conf=self.confidence,
                                 verbose=False,
                                 half=self.use_half,
+                                device=self.device,
+                                imgsz=imgsz,
                                 classes=list(self.TARGET_CLASSES.keys()),
                             )
                             batch_detections.extend(self._parse_results(results))
@@ -343,6 +359,7 @@ class YOLODetector:
         log.debug("detector.batch_inference", batch_size=len(frames),
                   total_detections=total_dets, ms=f"{elapsed:.1f}",
                   ms_per_frame=f"{elapsed / len(frames):.1f}",
+                  imgsz=imgsz,
                   engine=self._using_engine,
                   dynamic=self._engine_dynamic)
 
